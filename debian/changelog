@@ -1,0 +1,5 @@
+python-oslo.versionedobjects (0.1.0-1) unstable; urgency=medium
+
+  * Initial release. (Closes: #779353)
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 27 Feb 2015 16:05:31 +0100
