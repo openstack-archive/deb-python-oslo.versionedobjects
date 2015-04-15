@@ -17,7 +17,6 @@ import mock
 import six
 
 import fixtures
-from oslo_serialization import jsonutils
 from oslo_versionedobjects import _utils as utils
 from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
@@ -27,9 +26,9 @@ LOG = logging.getLogger(__name__)
 
 
 class FakeIndirectionAPI(base.VersionedObjectIndirectionAPI):
-    def __init__(self):
+    def __init__(self, serializer=None):
         super(FakeIndirectionAPI, self).__init__()
-        self._ser = base.VersionedObjectSerializer()
+        self._ser = serializer or base.VersionedObjectSerializer()
 
     def _get_changes(self, orig_obj, new_obj):
         updates = dict()
@@ -42,13 +41,23 @@ class FakeIndirectionAPI(base.VersionedObjectIndirectionAPI):
                                                    getattr(new_obj, name))
         return updates
 
+    def _canonicalize_args(self, context, args, kwargs):
+        args = tuple(
+            [self._ser.deserialize_entity(
+                context, self._ser.serialize_entity(context, arg))
+             for arg in args])
+        kwargs = dict(
+            [(argname, self._ser.deserialize_entity(
+                context, self._ser.serialize_entity(context, arg)))
+             for argname, arg in six.iteritems(kwargs)])
+        return args, kwargs
+
     def object_action(self, context, objinst, objmethod, args, kwargs):
         objinst = self._ser.deserialize_entity(
             context, self._ser.serialize_entity(
                 context, objinst))
         objmethod = six.text_type(objmethod)
-        args = jsonutils.loads(jsonutils.dumps(args))
-        kwargs = jsonutils.loads(jsonutils.dumps(kwargs))
+        args, kwargs = self._canonicalize_args(context, args, kwargs)
         original = objinst.obj_clone()
         with mock.patch('oslo_versionedobjects.base.VersionedObject.'
                         'indirection_api', new=None):
@@ -62,8 +71,7 @@ class FakeIndirectionAPI(base.VersionedObjectIndirectionAPI):
         objname = six.text_type(objname)
         objmethod = six.text_type(objmethod)
         objver = six.text_type(objver)
-        args = jsonutils.loads(jsonutils.dumps(args))
-        kwargs = jsonutils.loads(jsonutils.dumps(kwargs))
+        args, kwargs = self._canonicalize_args(context, args, kwargs)
         cls = base.VersionedObject.obj_class_from_name(objname, objver)
         with mock.patch('oslo_versionedobjects.base.VersionedObject.'
                         'indirection_api', new=None):
@@ -78,9 +86,11 @@ class FakeIndirectionAPI(base.VersionedObjectIndirectionAPI):
 
 
 class IndirectionFixture(fixtures.Fixture):
+    def __init__(self, indirection_api=None):
+        self.indirection_api = indirection_api or FakeIndirectionAPI()
+
     def setUp(self):
         super(IndirectionFixture, self).setUp()
-        self.indirection_api = FakeIndirectionAPI()
         self.useFixture(fixtures.MonkeyPatch(
             'oslo_versionedobjects.base.VersionedObject.indirection_api',
             self.indirection_api))

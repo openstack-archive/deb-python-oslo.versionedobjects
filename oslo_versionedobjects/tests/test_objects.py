@@ -365,6 +365,22 @@ class _BaseTestCase(test.TestCase):
 
 
 class TestFixture(_BaseTestCase):
+    def test_fake_indirection_takes_serializer(self):
+        ser = mock.MagicMock()
+        iapi = fixture.FakeIndirectionAPI(ser)
+        ser.serialize_entity.return_value = mock.sentinel.serial
+        iapi.object_action(mock.sentinel.context, mock.sentinel.objinst,
+                           mock.sentinel.objmethod, (), {})
+        ser.serialize_entity.assert_called_once_with(mock.sentinel.context,
+                                                     mock.sentinel.objinst)
+        ser.deserialize_entity.assert_called_once_with(mock.sentinel.context,
+                                                       mock.sentinel.serial)
+
+    def test_indirection_fixture_takes_indirection_api(self):
+        iapi = mock.sentinel.iapi
+        self.useFixture(fixture.IndirectionFixture(iapi))
+        self.assertEqual(iapi, base.VersionedObject.indirection_api)
+
     def test_indirection_action(self):
         self.useFixture(fixture.IndirectionFixture())
         obj = MyObj(context=self.context)
@@ -386,6 +402,16 @@ class TestFixture(_BaseTestCase):
                                                  'MyObj', 'query',
                                                  MyObj.VERSION,
                                                  (), {})
+
+    def test_fake_indirection_serializes_arguments(self):
+        ser = mock.MagicMock()
+        iapi = fixture.FakeIndirectionAPI(serializer=ser)
+        arg1 = mock.MagicMock()
+        arg2 = mock.MagicMock()
+        iapi.object_action(mock.sentinel.context, mock.sentinel.objinst,
+                           mock.sentinel.objmethod, (arg1,), {'foo': arg2})
+        ser.serialize_entity.assert_any_call(mock.sentinel.context, arg1)
+        ser.serialize_entity.assert_any_call(mock.sentinel.context, arg2)
 
     def test_get_hashes(self):
         checker = fixture.ObjectVersionChecker()
@@ -1279,6 +1305,23 @@ class TestObjectSerializer(_BaseTestCase):
         # primitive and not a hydrated object
         self.assertNotIsInstance(obj2, MyNSObj)
         self.assertIn('versioned_object.name', obj2)
+
+    def test_serializer_subclass_base_object_indirection(self):
+        @base.VersionedObjectRegistry.register
+        class MyNSObj(base.VersionedObject):
+            OBJ_SERIAL_NAMESPACE = 'foo'
+            fields = {'foo': fields.IntegerField()}
+            indirection_api = mock.MagicMock()
+
+        class MySerializer(base.VersionedObjectSerializer):
+            OBJ_BASE_CLASS = MyNSObj
+
+        ser = MySerializer()
+        prim = MyNSObj(foo=1).obj_to_primitive()
+        prim['foo.version'] = '2.0'
+        ser.deserialize_entity(mock.sentinel.context, prim)
+        MyNSObj.indirection_api.object_backport.assert_called_once_with(
+            mock.sentinel.context, prim, '1.0')
 
 
 class TestNamespaceCompatibility(test.TestCase):
