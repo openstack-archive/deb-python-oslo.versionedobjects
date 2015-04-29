@@ -71,7 +71,7 @@ Description: deals with DB schema versions and code expectations - Python 2.x
  oslo.versionedobjects library deals with DB schema being at different versions
  than the code expects, allowing services to be operated safely during
  upgrades. It enables DB independent schema by providing an abstraction layer,
- which allows us to support SQL and NoSQL Databases. oslo.versionedobjects is
+ which allows one to support SQL and NoSQL Databases. oslo.versionedobjects is
  also used in RPC APIs, to ensure upgrades happen without spreading version
  dependent code across different services and projects.
  .
@@ -98,7 +98,7 @@ Description: deals with DB schema versions and code expectations - Python 2.x
 # oslo.versionedobjects library deals with DB schema being at different versions
 # than the code expects, allowing services to be operated safely during
 # upgrades. It enables DB independent schema by providing an abstraction layer,
-# which allows us to support SQL and NoSQL Databases. oslo.versionedobjects is
+# which allows one to support SQL and NoSQL Databases. oslo.versionedobjects is
 # also used in RPC APIs, to ensure upgrades happen without spreading version
 # dependent code across different services and projects.
 # .
@@ -113,7 +113,7 @@ Description: deals with DB schema versions and code expectations - doc
  oslo.versionedobjects library deals with DB schema being at different versions
  than the code expects, allowing services to be operated safely during
  upgrades. It enables DB independent schema by providing an abstraction layer,
- which allows us to support SQL and NoSQL Databases. oslo.versionedobjects is
+ which allows one to support SQL and NoSQL Databases. oslo.versionedobjects is
  also used in RPC APIs, to ensure upgrades happen without spreading version
  dependent code across different services and projects.
  .
