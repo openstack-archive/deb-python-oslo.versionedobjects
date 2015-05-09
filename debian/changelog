@@ -1,3 +1,9 @@
+python-oslo.versionedobjects (0.1.1-2) unstable; urgency=medium
+
+  * Added missing (build-)depends on python-webob.
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 09 May 2015 22:48:16 +0200
+
 python-oslo.versionedobjects (0.1.1-1) unstable; urgency=medium
 
   * Initial release. (Closes: #779353)
