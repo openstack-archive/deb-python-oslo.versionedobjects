@@ -42,7 +42,7 @@ exc_log_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(exc_log_opts)
+CONF.register_opts(exc_log_opts, group='oslo_versionedobjects')
 
 
 class ConvertedException(webob.exc.WSGIHTTPException):
@@ -59,7 +59,9 @@ def _cleanse_dict(original):
 
 
 def wrap_exception(notifier=None, get_notifier=None):
-    """This decorator wraps a method to catch any exceptions that may
+    """Catch all exceptions in wrapped method
+
+    This decorator wraps a method to catch any exceptions that may
     get thrown. It also optionally sends the exception to the notification
     system.
     """
@@ -125,7 +127,7 @@ class VersionedObjectsException(Exception):
                 for name, value in kwargs.iteritems():
                     LOG.error("%s: %s" % (name, value))    # noqa
 
-                if CONF.fatal_exception_format_errors:
+                if CONF.oslo_versionedobjects.fatal_exception_format_errors:
                     raise six.reraise(*exc_info)
                 else:
                     # at least get the core message out if something happened
@@ -162,3 +164,11 @@ class ReadOnlyFieldError(VersionedObjectsException):
 
 class UnsupportedObjectError(VersionedObjectsException):
     msg_fmt = _('Unsupported object type %(objtype)s')
+
+
+class EnumRequiresValidValuesError(VersionedObjectsException):
+    msg_fmt = _('Enum fields require a list of valid_values')
+
+
+class EnumValidValuesInvalidError(VersionedObjectsException):
+    msg_fmt = _('Enum valid values are not valid')

@@ -84,7 +84,13 @@ def _make_class_properties(cls):
                 LOG.exception(_LE('Error setting %(attr)s'), {'attr': attr})
                 raise
 
-        setattr(cls, name, property(getter, setter))
+        def deleter(self, name=name):
+            attrname = _get_attrname(name)
+            if not hasattr(self, attrname):
+                raise AttributeError("No such attribute `%s'" % name)
+            delattr(self, attrname)
+
+        setattr(cls, name, property(getter, setter, deleter))
 
 
 class VersionedObjectRegistry(object):
@@ -155,8 +161,8 @@ def remotable_classmethod(fn):
     """Decorator for remotable classmethods."""
     @six.wraps(fn)
     def wrapper(cls, context, *args, **kwargs):
-        if VersionedObject.indirection_api:
-            result = VersionedObject.indirection_api.object_class_action(
+        if cls.indirection_api:
+            result = cls.indirection_api.object_class_action(
                 context, cls.obj_name(), fn.__name__, cls.VERSION,
                 args, kwargs)
         else:
@@ -184,8 +190,8 @@ def remotable(fn):
         if ctxt is None:
             raise exception.OrphanedObjectError(method=fn.__name__,
                                                 objtype=self.obj_name())
-        if VersionedObject.indirection_api:
-            updates, result = VersionedObject.indirection_api.object_action(
+        if self.indirection_api:
+            updates, result = self.indirection_api.object_action(
                 ctxt, self, fn.__name__, args, kwargs)
             for key, value in six.iteritems(updates):
                 if key in self.fields:
@@ -295,7 +301,9 @@ class VersionedObject(object):
 
     @classmethod
     def obj_name(cls):
-        """Return a canonical name for this object which will be used over
+        """Return the object's name
+
+        Return a canonical name for this object which will be used over
         the wire for remote hydration.
         """
         return cls.__name__
@@ -469,11 +477,11 @@ class VersionedObject(object):
           if the requested version of this object is older than the version
           where the new dependent object was added.
 
-        :param:primitive: The result of self.obj_to_primitive()
-        :param:target_version: The version string requested by the recipient
-        of the object
-        :raises: oslo_versionedobjects.exception.UnsupportedObjectError
-        if conversion is not possible for some reason
+        :param primitive: The result of :meth:`obj_to_primitive`
+        :param target_version: The version string requested by the recipient
+                               of the object
+        :raises: :exc:`oslo_versionedobjects.exception.UnsupportedObjectError`
+                 if conversion is not possible for some reason
         """
         for key, field in self.fields.items():
             if not isinstance(field, (obj_fields.ObjectField,
@@ -518,7 +526,7 @@ class VersionedObject(object):
                      if field.default != obj_fields.UnspecifiedDefault]
 
         for attr in attrs:
-            default = self.fields[attr].default
+            default = copy.deepcopy(self.fields[attr].default)
             if default is obj_fields.UnspecifiedDefault:
                 raise exception.ObjectActionError(
                     action='set_defaults',
@@ -568,10 +576,10 @@ class VersionedObject(object):
                           any sub-objects within the list of fields
                           being reset.
 
-        NOTE: This is NOT "revert to previous values"
-        NOTE: Specifying fields on recursive resets will only be
-              honored at the top level. Everything below the top
-              will reset all.
+        This is NOT "revert to previous values".
+
+        Specifying fields on recursive resets will only be honored at the top
+        level. Everything below the top will reset all.
         """
         if recursive:
             for field in self.obj_get_changes():
@@ -634,59 +642,61 @@ class ComparableVersionedObject(object):
 
 
 class VersionedObjectDictCompat(object):
-    """Mix-in to provide dictionary key access compat
+    """Mix-in to provide dictionary key access compatibility
 
     If an object needs to support attribute access using
     dictionary items instead of object attributes, inherit
     from this class. This should only be used as a temporary
     measure until all callers are converted to use modern
     attribute access.
-
-    NOTE(berrange) This class will eventually be deleted.
     """
 
-    # dictish syntactic sugar
-    def iteritems(self):
-        """For backwards-compatibility with dict-based objects.
-
-        NOTE(danms): May be removed in the future.
-        """
+    def __iter__(self):
         for name in self.obj_fields:
             if (self.obj_attr_is_set(name) or
                     name in self.obj_extra_fields):
-                yield name, getattr(self, name)
+                yield name
 
-    items = lambda self: list(self.iteritems())
+    iterkeys = __iter__
+
+    def itervalues(self):
+        for name in self:
+            yield getattr(self, name)
+
+    def iteritems(self):
+        for name in self:
+            yield name, getattr(self, name)
+
+    if six.PY3:
+        # NOTE(haypo): Python 3 dictionaries don't have iterkeys(),
+        # itervalues() or iteritems() methods. These methods are provided to
+        # ease the transition from Python 2 to Python 3.
+        keys = iterkeys
+        values = itervalues
+        items = iteritems
+    else:
+        def keys(self):
+            return list(self.iterkeys())
+
+        def values(self):
+            return list(self.itervalues())
+
+        def items(self):
+            return list(self.iteritems())
 
     def __getitem__(self, name):
-        """For backwards-compatibility with dict-based objects.
-
-        NOTE(danms): May be removed in the future.
-        """
         return getattr(self, name)
 
     def __setitem__(self, name, value):
-        """For backwards-compatibility with dict-based objects.
-
-        NOTE(danms): May be removed in the future.
-        """
         setattr(self, name, value)
 
     def __contains__(self, name):
-        """For backwards-compatibility with dict-based objects.
-
-        NOTE(danms): May be removed in the future.
-        """
         try:
             return self.obj_attr_is_set(name)
         except AttributeError:
             return False
 
     def get(self, key, value=_NotSpecifiedSentinel):
-        """For backwards-compatibility with dict-based objects.
-
-        NOTE(danms): May be removed in the future.
-        """
         if key not in self.obj_fields:
             raise AttributeError("'%s' object has no attribute '%s'" % (
                 self.__class__, key))
@@ -696,10 +706,6 @@ class VersionedObjectDictCompat(object):
             return getattr(self, key)
 
     def update(self, updates):
-        """For backwards-compatibility with dict-base objects.
-
-        NOTE(danms): May be removed in the future.
-        """
         for key, value in updates.items():
             setattr(self, key, value)
 
@@ -812,6 +818,7 @@ class VersionedObjectSerializer(messaging.NoOpSerializer):
 
     def _process_iterable(self, context, action_fn, values):
         """Process an iterable, taking an action on each value.
+
         :param:context: Request context
         :param:action_fn: Action to take on each item in values
         :param:values: Iterable container of things to take action on

@@ -15,11 +15,13 @@
 import abc
 import datetime
 
+import copy
 import iso8601
 from oslo_utils import timeutils
 import six
 
 from oslo_versionedobjects._i18n import _
+from oslo_versionedobjects import exception
 
 
 class KeyTypeError(TypeError):
@@ -154,7 +156,7 @@ class Field(object):
             # NOTE(danms): We coerce the default value each time the field
             # is set to None as our contract states that we'll let the type
             # examine the object and attribute name at that time.
-            return self._type.coerce(obj, attr, self._default)
+            return self._type.coerce(obj, attr, copy.deepcopy(self._default))
         else:
             raise ValueError(_("Field `%s' cannot be None") % attr)
 
@@ -238,12 +240,39 @@ class String(FieldType):
         if isinstance(value, accepted_types):
             return six.text_type(value)
         else:
-            raise ValueError(_('A string is required here, not %s') %
-                             value.__class__.__name__)
+            raise ValueError(_('A string is required in field %(attr)s, '
+                               'not %(type)s') %
+                             {'attr': attr, 'type': value.__class__.__name__})
 
     @staticmethod
     def stringify(value):
         return '\'%s\'' % value
+
+
+class Enum(String):
+    def __init__(self, valid_values, **kwargs):
+        if not valid_values:
+            raise exception.EnumRequiresValidValuesError()
+        try:
+            # Test validity of the values
+            for value in valid_values:
+                super(Enum, self).coerce(None, 'init', value)
+        except (TypeError, ValueError):
+            raise exception.EnumValidValuesInvalidError()
+        self._valid_values = valid_values
+        super(Enum, self).__init__(**kwargs)
+
+    def coerce(self, obj, attr, value):
+        if value not in self._valid_values:
+            msg = _("Field value %s is invalid") % value
+            raise ValueError(msg)
+        return super(Enum, self).coerce(obj, attr, value)
+
+    def stringify(self, value):
+        if value not in self._valid_values:
+            msg = _("Field value %s is invalid") % value
+            raise ValueError(msg)
+        return super(Enum, self).stringify(value)
 
 
 class UUID(FieldType):
@@ -281,7 +310,8 @@ class DateTime(FieldType):
             # during our objects transition
             value = timeutils.parse_isotime(value)
         elif not isinstance(value, datetime.datetime):
-            raise ValueError(_('A datetime.datetime is required here'))
+            raise ValueError(_('A datetime.datetime is required '
+                               'in field %s') % attr)
 
         if value.utcoffset() is None and self.tzinfo_aware:
             # NOTE(danms): Legacy objects from sqlalchemy are stored in UTC,
@@ -312,7 +342,7 @@ class CompoundFieldType(FieldType):
 class List(CompoundFieldType):
     def coerce(self, obj, attr, value):
         if not isinstance(value, list):
-            raise ValueError(_('A list is required here'))
+            raise ValueError(_('A list is required in field %s') % attr)
         for index, element in enumerate(list(value)):
             value[index] = self._element_type.coerce(
                 obj, '%s[%i]' % (attr, index), element)
@@ -332,7 +362,7 @@ class List(CompoundFieldType):
 class Dict(CompoundFieldType):
     def coerce(self, obj, attr, value):
         if not isinstance(value, dict):
-            raise ValueError(_('A dict is required here'))
+            raise ValueError(_('A dict is required in field %s') % attr)
         for key, element in value.items():
             if not isinstance(key, six.string_types):
                 # NOTE(guohliu) In order to keep compatibility with python3
@@ -400,7 +430,7 @@ class DictProxyField(object):
 class Set(CompoundFieldType):
     def coerce(self, obj, attr, value):
         if not isinstance(value, set):
-            raise ValueError(_('A set is required here'))
+            raise ValueError(_('A set is required in field %s') % attr)
 
         coerced = set()
         for element in value:
@@ -433,8 +463,9 @@ class Object(FieldType):
             obj_name = ""
 
         if obj_name != self._obj_name:
-            raise ValueError(_('An object of type %s is required here') %
-                             self._obj_name)
+            raise ValueError(_('An object of type %(type)s is required '
+                               'in field %(attr)s') %
+                             {'type': self._obj_name, 'attr': attr})
         return value
 
     @staticmethod
@@ -478,6 +509,23 @@ class StringField(AutoTypedField):
     AUTO_TYPE = String()
 
 
+class EnumField(AutoTypedField):
+    def __init__(self, valid_values, **kwargs):
+        self.AUTO_TYPE = Enum(valid_values)
+        super(EnumField, self).__init__(**kwargs)
+
+    def __repr__(self):
+        valid_values = self._type._valid_values
+        args = {
+            'nullable': self._nullable,
+            'default': self._default,
+            }
+        args.update({'valid_values': valid_values})
+        return '%s(%s)' % (self._type.__class__.__name__,
+                           ','.join(['%s=%s' % (k, v)
+                                     for k, v in sorted(args.items())]))
+
+
 class UUIDField(AutoTypedField):
     AUTO_TYPE = UUID()
 
@@ -514,6 +562,23 @@ class DictOfIntegersField(AutoTypedField):
 
 class ListOfStringsField(AutoTypedField):
     AUTO_TYPE = List(String())
+
+
+class ListOfEnumField(AutoTypedField):
+    def __init__(self, valid_values, **kwargs):
+        self.AUTO_TYPE = List(Enum(valid_values))
+        super(ListOfEnumField, self).__init__(**kwargs)
+
+    def __repr__(self):
+        valid_values = self._type._element_type._type._valid_values
+        args = {
+            'nullable': self._nullable,
+            'default': self._default,
+            }
+        args.update({'valid_values': valid_values})
+        return '%s(%s)' % (self._type.__class__.__name__,
+                           ','.join(['%s=%s' % (k, v)
+                                     for k, v in sorted(args.items())]))
 
 
 class SetOfIntegersField(AutoTypedField):
