@@ -1,12 +1,13 @@
-python-oslo.versionedobjects (0.3.0-1) UNRELEASED; urgency=medium
+python-oslo.versionedobjects (0.3.0-1) experimental; urgency=medium
 
+  * Team upload.
   * New upstream release:
     - d/control: Align version requirements with upstream.
   * Re-align with Ubuntu:
     - d/control: Add Breaks/Replaces and transitional packages for
       *oslo-versionedobjects in Ubuntu.
 
- -- James Page <james.page@ubuntu.com>  Wed, 03 Jun 2015 12:51:49 +0100
+ -- James Page <james.page@ubuntu.com>  Tue, 09 Jun 2015 08:48:52 +0100
 
 python-oslo.versionedobjects (0.1.1-2) unstable; urgency=medium
 
