@@ -103,7 +103,7 @@ Architecture: all
 Depends: python-oslo.versionedobjects,
          ${misc:Depends},
 Description: transitional dummy package for python-oslo-versionedobjects.
- This transtional package is safe to remove.
+ This transitional package is safe to remove.
 
 Package: python-oslo-versionedobjects-doc
 Section: oldlibs
@@ -111,4 +111,4 @@ Architecture: all
 Depends: python-oslo.versionedobjects-doc,
          ${misc:Depends},
 Description: transitional dummy package for python-oslo-versionedobjects-doc.
- This transtional package is safe to remove.
+ This transitional package is safe to remove.
