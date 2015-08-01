@@ -81,32 +81,32 @@ Description: deals with DB schema versions and code expectations - Python 2.x
  .
  This package contains the Python 2.x module.
 
-#Package: python3-oslo.versionedobjects
-#Architecture: all
-#Depends: python3-babel,
-#         python3-fixtures,
-#         python3-iso8601,
-#         python3-oslo.concurrency (>= 2.1.0),
-#         python3-oslo.context (>= 0.2.0),
-#         python3-oslo.i18n (>= 1.5.0),
-#         python3-oslo.log (>= 1.6.0),
-#         python3-oslo.messaging (>= 1.16.0),
-#         python3-oslo.serialization (>= 1.4.0),
-#         python3-oslo.utils (>= 1.9.0),
-#         python3-six (>= 1.9.0),
-#         python3-webob,
-#         ${misc:Depends},
-#         ${python3:Depends},
-#Suggests: python-oslo.versionedobjects-doc
-#Description: deals with DB schema versions and code expectations - Python 3.x
-# oslo.versionedobjects library deals with DB schema being at different versions
-# than the code expects, allowing services to be operated safely during
-# upgrades. It enables DB independent schema by providing an abstraction layer,
-# which allows one to support SQL and NoSQL Databases. oslo.versionedobjects is
-# also used in RPC APIs, to ensure upgrades happen without spreading version
-# dependent code across different services and projects.
-# .
-# This package contains the Python 3.x module.
+Package: python3-oslo.versionedobjects
+Architecture: all
+Depends: python3-babel,
+         python3-fixtures,
+         python3-iso8601,
+         python3-oslo.concurrency (>= 2.1.0),
+         python3-oslo.context (>= 0.2.0),
+         python3-oslo.i18n (>= 1.5.0),
+         python3-oslo.log (>= 1.6.0),
+         python3-oslo.messaging (>= 1.16.0),
+         python3-oslo.serialization (>= 1.4.0),
+         python3-oslo.utils (>= 1.9.0),
+         python3-six (>= 1.9.0),
+         python3-webob,
+         ${misc:Depends},
+         ${python3:Depends},
+Suggests: python-oslo.versionedobjects-doc
+Description: deals with DB schema versions and code expectations - Python 3.x
+ oslo.versionedobjects library deals with DB schema being at different versions
+ than the code expects, allowing services to be operated safely during
+ upgrades. It enables DB independent schema by providing an abstraction layer,
+ which allows one to support SQL and NoSQL Databases. oslo.versionedobjects is
+ also used in RPC APIs, to ensure upgrades happen without spreading version
+ dependent code across different services and projects.
+ .
+ This package contains the Python 3.x module.
 
 Package: python-oslo.versionedobjects-doc
 Section: doc
