@@ -35,6 +35,38 @@ class FakeFieldType(fields.FieldType):
         return value[1:-1]
 
 
+class FakeEnum(fields.Enum):
+    FROG = "frog"
+    PLATYPUS = "platypus"
+    ALLIGATOR = "alligator"
+
+    ALL = (FROG, PLATYPUS, ALLIGATOR)
+
+    def __init__(self, **kwargs):
+        super(FakeEnum, self).__init__(valid_values=FakeEnum.ALL,
+                                       **kwargs)
+
+
+class FakeEnumAlt(fields.Enum):
+    FROG = "frog"
+    PLATYPUS = "platypus"
+    AARDVARK = "aardvark"
+
+    ALL = (FROG, PLATYPUS, AARDVARK)
+
+    def __init__(self, **kwargs):
+        super(FakeEnumAlt, self).__init__(valid_values=FakeEnumAlt.ALL,
+                                          **kwargs)
+
+
+class FakeEnumField(fields.BaseEnumField):
+    AUTO_TYPE = FakeEnum()
+
+
+class FakeEnumAltField(fields.BaseEnumField):
+    AUTO_TYPE = FakeEnumAlt()
+
+
 class TestField(test.TestCase):
     def setUp(self):
         super(TestField, self).setUp()
@@ -84,6 +116,31 @@ class TestString(TestField):
 
     def test_stringify(self):
         self.assertEqual("'123'", self.field.stringify(123))
+
+
+class TestBaseEnum(TestField):
+    def setUp(self):
+        super(TestBaseEnum, self).setUp()
+        self.field = FakeEnumField()
+        self.coerce_good_values = [('frog', 'frog'),
+                                   ('platypus', 'platypus'),
+                                   ('alligator', 'alligator')]
+        self.coerce_bad_values = ['aardvark', 'wookie']
+        self.to_primitive_values = self.coerce_good_values[0:1]
+        self.from_primitive_values = self.coerce_good_values[0:1]
+
+    def test_stringify(self):
+        self.assertEqual("'platypus'", self.field.stringify('platypus'))
+
+    def test_stringify_invalid(self):
+        self.assertRaises(ValueError, self.field.stringify, 'aardvark')
+
+    def test_fingerprint(self):
+        # Notes(yjiang5): make sure changing valid_value will be detected
+        # in test_objects.test_versions
+        field1 = FakeEnumField()
+        field2 = FakeEnumAltField()
+        self.assertNotEqual(str(field1), str(field2))
 
 
 class TestEnum(TestField):
@@ -148,6 +205,23 @@ class TestBoolean(TestField):
         self.field = fields.BooleanField()
         self.coerce_good_values = [(True, True), (False, False), (1, True),
                                    ('foo', True), (0, False), ('', False)]
+        self.coerce_bad_values = []
+        self.to_primitive_values = self.coerce_good_values[0:2]
+        self.from_primitive_values = self.coerce_good_values[0:2]
+
+
+class TestFlexibleBoolean(TestField):
+    def setUp(self):
+        super(TestFlexibleBoolean, self).setUp()
+        self.field = fields.FlexibleBooleanField()
+        self.coerce_good_values = [(True, True), (False, False),
+                                   ("true", True), ("false", False),
+                                   ("t", True), ("f", False),
+                                   ("yes", True), ("no", False),
+                                   ("y", True), ("n", False),
+                                   ("on", True), ("off", False),
+                                   (1, True), (0, False),
+                                   ('frog', False), ('', False)]
         self.coerce_bad_values = []
         self.to_primitive_values = self.coerce_good_values[0:2]
         self.from_primitive_values = self.coerce_good_values[0:2]
@@ -402,3 +476,94 @@ class TestObject(TestField):
         obj = self._test_cls(uuid='fake-uuid')
         self.assertEqual('TestableObject(fake-uuid)',
                          self.field.stringify(obj))
+
+    def test_inheritance(self):
+        # We need a whole lot of classes in a hierarchy to
+        # test subclass recognition for the Object field
+        class TestAnimal(obj_base.VersionedObject):
+            pass
+
+        class TestMammal(TestAnimal):
+            pass
+
+        class TestReptile(TestAnimal):
+            pass
+
+        # We'll use this to create a diamond in the
+        # class hierarchy
+        class TestPet(TestAnimal):
+            pass
+
+        # Non-versioned object mixin
+        class TestScary(object):
+            pass
+
+        class TestCrocodile(TestReptile, TestPet, TestScary):
+            pass
+
+        class TestPig(TestMammal):
+            pass
+
+        class TestDog(TestMammal, TestPet):
+            pass
+
+        # Some fictional animals
+        wolfy = TestDog()  # Terminator-2
+        ticktock = TestCrocodile()  # Peter Pan
+        babe = TestPig()  # Babe
+
+        # The various classes
+        animals = fields.Object('TestAnimal', subclasses=True)
+        mammals = fields.Object('TestMammal', subclasses=True)
+        reptiles = fields.Object('TestReptile', subclasses=True)
+        pets = fields.Object('TestPet', subclasses=True)
+        pigs = fields.Object('TestPig', subclasses=True)
+        dogs = fields.Object('TestDog', subclasses=True)
+        crocs = fields.Object('TestCrocodile', subclasses=True)
+
+        self.assertEqual(["TestDog", "TestMammal", "TestPet",
+                          "TestAnimal", "VersionedObject"],
+                         fields.Object._get_all_obj_names(wolfy))
+
+        self.assertEqual(["TestCrocodile", "TestReptile", "TestPet",
+                          "TestAnimal", "VersionedObject"],
+                         fields.Object._get_all_obj_names(ticktock))
+
+        self.assertEqual(["TestPig", "TestMammal",
+                          "TestAnimal", "VersionedObject"],
+                         fields.Object._get_all_obj_names(babe))
+
+        # Everything is an animal
+        self.assertEqual(wolfy, animals.coerce(None, "animal", wolfy))
+        self.assertEqual(ticktock, animals.coerce(None, "animal", ticktock))
+        self.assertEqual(babe, animals.coerce(None, "animal", babe))
+
+        # crocodiles are not mammals
+        self.assertEqual(wolfy, mammals.coerce(None, "animal", wolfy))
+        self.assertRaises(ValueError, mammals.coerce, None, "animal", ticktock)
+        self.assertEqual(babe, mammals.coerce(None, "animal", babe))
+
+        # dogs and pigs are not reptiles
+        self.assertRaises(ValueError, reptiles.coerce, None, "animal", wolfy)
+        self.assertEqual(ticktock, reptiles.coerce(None, "animal", ticktock))
+        self.assertRaises(ValueError, reptiles.coerce, None, "animal", babe)
+
+        # pigs are not pets, but crocodiles (!) & dogs are
+        self.assertEqual(wolfy, pets.coerce(None, "animal", wolfy))
+        self.assertEqual(ticktock, pets.coerce(None, "animal", ticktock))
+        self.assertRaises(ValueError, pets.coerce, None, "animal", babe)
+
+        # Only dogs are dogs
+        self.assertEqual(wolfy, dogs.coerce(None, "animal", wolfy))
+        self.assertRaises(ValueError, dogs.coerce, None, "animal", ticktock)
+        self.assertRaises(ValueError, dogs.coerce, None, "animal", babe)
+
+        # Only crocs are crocs
+        self.assertRaises(ValueError, crocs.coerce, None, "animal", wolfy)
+        self.assertEqual(ticktock, crocs.coerce(None, "animal", ticktock))
+        self.assertRaises(ValueError, crocs.coerce, None, "animal", babe)
+
+        # Only pigs are pigs
+        self.assertRaises(ValueError, pigs.coerce, None, "animal", ticktock)
+        self.assertRaises(ValueError, pigs.coerce, None, "animal", wolfy)
+        self.assertEqual(babe, pigs.coerce(None, "animal", babe))

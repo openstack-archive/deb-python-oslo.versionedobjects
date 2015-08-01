@@ -200,9 +200,10 @@ def remotable(fn):
                     # deserialized any object fields into objects already,
                     # we do not try to deserialize them again here.
                     if isinstance(value, VersionedObject):
-                        self[key] = value
+                        setattr(self, key, value)
                     else:
-                        self[key] = field.from_primitive(self, key, value)
+                        setattr(self, key,
+                                field.from_primitive(self, key, value))
             self.obj_reset_changes()
             self._changed_fields = set(updates.get('obj_what_changed', []))
             return result
@@ -630,7 +631,7 @@ class VersionedObject(object):
 
 
 class ComparableVersionedObject(object):
-    """Mix-in to provide comparason methods
+    """Mix-in to provide comparison methods
 
     When objects are to be compared with each other (in tests for example),
     this mixin can be used.
@@ -801,7 +802,7 @@ class VersionedObjectSerializer(messaging.NoOpSerializer):
         try:
             return self.OBJ_BASE_CLASS.obj_from_primitive(
                 objprim, context=context)
-        except exception.IncompatibleObjectVersion as e:
+        except exception.IncompatibleObjectVersion:
             verkey = '%s.version' % self.OBJ_BASE_CLASS.OBJ_SERIAL_NAMESPACE
             objver = objprim[verkey]
             if objver.count('.') == 2:
@@ -810,9 +811,12 @@ class VersionedObjectSerializer(messaging.NoOpSerializer):
                 objprim[verkey] = \
                     '.'.join(objver.split('.')[:2])
                 return self._process_object(context, objprim)
-            if self.OBJ_BASE_CLASS.indirection_api:
+            namekey = '%s.name' % self.OBJ_BASE_CLASS.OBJ_SERIAL_NAMESPACE
+            objname = objprim[namekey]
+            supported = VersionedObjectRegistry.obj_classes().get(objname, [])
+            if self.OBJ_BASE_CLASS.indirection_api and supported:
                 return self.OBJ_BASE_CLASS.indirection_api.object_backport(
-                    context, objprim, e.kwargs['supported'])
+                    context, objprim, supported[0].VERSION)
             else:
                 raise
 

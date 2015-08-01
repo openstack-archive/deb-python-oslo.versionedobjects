@@ -17,6 +17,7 @@ import datetime
 
 import copy
 import iso8601
+from oslo_utils import strutils
 from oslo_utils import timeutils
 import six
 
@@ -241,8 +242,8 @@ class String(FieldType):
             return six.text_type(value)
         else:
             raise ValueError(_('A string is required in field %(attr)s, '
-                               'not %(type)s') %
-                             {'attr': attr, 'type': value.__class__.__name__})
+                               'not a %(type)s') %
+                             {'attr': attr, 'type': type(value).__name__})
 
     @staticmethod
     def stringify(value):
@@ -299,6 +300,12 @@ class Boolean(FieldType):
         return bool(value)
 
 
+class FlexibleBoolean(Boolean):
+    @staticmethod
+    def coerce(obj, attr, value):
+        return strutils.bool_from_string(value)
+
+
 class DateTime(FieldType):
     def __init__(self, tzinfo_aware=True, *args, **kwargs):
         self.tzinfo_aware = tzinfo_aware
@@ -311,7 +318,8 @@ class DateTime(FieldType):
             value = timeutils.parse_isotime(value)
         elif not isinstance(value, datetime.datetime):
             raise ValueError(_('A datetime.datetime is required '
-                               'in field %s') % attr)
+                               'in field %(attr)s, not a %(type)') %
+                             {'attr': attr, 'type': type(value).__name__})
 
         if value.utcoffset() is None and self.tzinfo_aware:
             # NOTE(danms): Legacy objects from sqlalchemy are stored in UTC,
@@ -342,11 +350,13 @@ class CompoundFieldType(FieldType):
 class List(CompoundFieldType):
     def coerce(self, obj, attr, value):
         if not isinstance(value, list):
-            raise ValueError(_('A list is required in field %s') % attr)
-        for index, element in enumerate(list(value)):
-            value[index] = self._element_type.coerce(
-                obj, '%s[%i]' % (attr, index), element)
-        return value
+            raise ValueError(_('A list is required in field %(attr)s, '
+                               'not a %(type)s') %
+                             {'attr': attr, 'type': type(value).__name__})
+        coerced_list = CoercedList()
+        coerced_list.enable_coercing(self._element_type, obj, attr)
+        coerced_list.extend(value)
+        return coerced_list
 
     def to_primitive(self, obj, attr, value):
         return [self._element_type.to_primitive(obj, attr, x) for x in value]
@@ -362,17 +372,13 @@ class List(CompoundFieldType):
 class Dict(CompoundFieldType):
     def coerce(self, obj, attr, value):
         if not isinstance(value, dict):
-            raise ValueError(_('A dict is required in field %s') % attr)
-        for key, element in value.items():
-            if not isinstance(key, six.string_types):
-                # NOTE(guohliu) In order to keep compatibility with python3
-                # we need to use six.string_types rather than basestring here,
-                # since six.string_types is a tuple, so we need to pass the
-                # real type in.
-                raise KeyTypeError(six.string_types[0], key)
-            value[key] = self._element_type.coerce(
-                obj, '%s["%s"]' % (attr, key), element)
-        return value
+            raise ValueError(_('A dict is required in field %(attr)s, '
+                               'not a %(type)s') %
+                             {'attr': attr, 'type': type(value).__name__})
+        coerced_dict = CoercedDict()
+        coerced_dict.enable_coercing(self._element_type, obj, attr)
+        coerced_dict.update(value)
+        return coerced_dict
 
     def to_primitive(self, obj, attr, value):
         primitive = {}
@@ -430,13 +436,13 @@ class DictProxyField(object):
 class Set(CompoundFieldType):
     def coerce(self, obj, attr, value):
         if not isinstance(value, set):
-            raise ValueError(_('A set is required in field %s') % attr)
-
-        coerced = set()
-        for element in value:
-            coerced.add(self._element_type.coerce(
-                obj, '%s["%s"]' % (attr, element), element))
-        return coerced
+            raise ValueError(_('A set is required in field %(attr)s, '
+                               'not a %(type)s') %
+                             {'attr': attr, 'type': type(value).__name__})
+        coerced_set = CoercedSet()
+        coerced_set.enable_coercing(self._element_type, obj, attr)
+        coerced_set.update(value)
+        return coerced_set
 
     def to_primitive(self, obj, attr, value):
         return tuple(
@@ -452,9 +458,20 @@ class Set(CompoundFieldType):
 
 
 class Object(FieldType):
-    def __init__(self, obj_name, **kwargs):
+    def __init__(self, obj_name, subclasses=False, **kwargs):
         self._obj_name = obj_name
+        self._subclasses = subclasses
         super(Object, self).__init__(**kwargs)
+
+    @staticmethod
+    def _get_all_obj_names(obj):
+        obj_names = []
+        for parent in obj.__class__.mro():
+            # Skip mix-ins which are not versioned object subclasses
+            if not hasattr(parent, "obj_name"):
+                continue
+            obj_names.append(parent.obj_name())
+        return obj_names
 
     def coerce(self, obj, attr, value):
         try:
@@ -462,10 +479,16 @@ class Object(FieldType):
         except AttributeError:
             obj_name = ""
 
-        if obj_name != self._obj_name:
+        if self._subclasses:
+            obj_names = self._get_all_obj_names(value)
+        else:
+            obj_names = [obj_name]
+
+        if self._obj_name not in obj_names:
             raise ValueError(_('An object of type %(type)s is required '
-                               'in field %(attr)s') %
-                             {'type': self._obj_name, 'attr': attr})
+                               'in field %(attr)s, not a %(valtype)s') %
+                             {'type': self._obj_name, 'attr': attr,
+                              'valtype': obj_name})
         return value
 
     @staticmethod
@@ -509,10 +532,25 @@ class StringField(AutoTypedField):
     AUTO_TYPE = String()
 
 
-class EnumField(AutoTypedField):
-    def __init__(self, valid_values, **kwargs):
-        self.AUTO_TYPE = Enum(valid_values)
-        super(EnumField, self).__init__(**kwargs)
+class BaseEnumField(AutoTypedField):
+    '''Base class for all enum field types
+
+    This class should not be directly instantiated. Instead
+    subclass it and set AUTO_TYPE to be a SomeEnum()
+    where SomeEnum is a subclass of Enum.
+    '''
+
+    def __init__(self, **kwargs):
+        if self.AUTO_TYPE is None:
+            raise exception.EnumFieldUnset(
+                fieldname=self.__class__.__name__)
+
+        if not isinstance(self.AUTO_TYPE, Enum):
+            raise exception.EnumFieldInvalid(
+                typename=self.AUTO_TYPE.__class__.__name,
+                fieldname=self.__class__.__name__)
+
+        super(BaseEnumField, self).__init__(**kwargs)
 
     def __repr__(self):
         valid_values = self._type._valid_values
@@ -524,6 +562,21 @@ class EnumField(AutoTypedField):
         return '%s(%s)' % (self._type.__class__.__name__,
                            ','.join(['%s=%s' % (k, v)
                                      for k, v in sorted(args.items())]))
+
+
+class EnumField(BaseEnumField):
+    '''Anonymous enum field type
+
+    This class allows for anonymous enum types to be
+    declared, simply by passing in a list of valid values
+    to its constructor. It is generally preferrable though,
+    to create an explicit named enum type by sub-classing
+    the BaseEnumField type directly.
+    '''
+
+    def __init__(self, valid_values, **kwargs):
+        self.AUTO_TYPE = Enum(valid_values=valid_values)
+        super(EnumField, self).__init__(**kwargs)
 
 
 class UUIDField(AutoTypedField):
@@ -538,8 +591,19 @@ class FloatField(AutoTypedField):
     AUTO_TYPE = Float()
 
 
+# This is a strict interpretation of boolean
+# values using Python's semantics for truth/falsehood
 class BooleanField(AutoTypedField):
     AUTO_TYPE = Boolean()
+
+
+# This is a flexible interpretation of boolean
+# values using common user friendly semantics for
+# truth/falsehood. ie strings like 'yes', 'no',
+# 'on', 'off', 't', 'f' get mapped to values you
+# would expect.
+class FlexibleBooleanField(AutoTypedField):
+    AUTO_TYPE = FlexibleBoolean()
 
 
 class DateTimeField(AutoTypedField):
@@ -594,12 +658,152 @@ class ListOfDictOfNullableStringsField(AutoTypedField):
 
 
 class ObjectField(AutoTypedField):
-    def __init__(self, objtype, **kwargs):
-        self.AUTO_TYPE = Object(objtype)
+    def __init__(self, objtype, subclasses=False, **kwargs):
+        self.AUTO_TYPE = Object(objtype, subclasses)
         super(ObjectField, self).__init__(**kwargs)
 
 
 class ListOfObjectsField(AutoTypedField):
-    def __init__(self, objtype, **kwargs):
-        self.AUTO_TYPE = List(Object(objtype))
+    def __init__(self, objtype, subclasses=False, **kwargs):
+        self.AUTO_TYPE = List(Object(objtype, subclasses))
         super(ListOfObjectsField, self).__init__(**kwargs)
+
+
+class CoercedCollectionMixin(object):
+    def __init__(self, *args, **kwargs):
+        self._element_type = None
+        self._obj = None
+        self._field = None
+        super(CoercedCollectionMixin, self).__init__(*args, **kwargs)
+
+    def enable_coercing(self, element_type, obj, field):
+        self._element_type = element_type
+        self._obj = obj
+        self._field = field
+
+
+class CoercedList(CoercedCollectionMixin, list):
+    """List which coerces its elements
+
+    List implementation which overrides all element-adding methods and
+    coercing the element(s) being added to the required element type
+    """
+    def _coerce_item(self, index, item):
+        if hasattr(self, "_element_type") and self._element_type is not None:
+            att_name = "%s[%i]" % (self._field, index)
+            return self._element_type.coerce(self._obj, att_name, item)
+        else:
+            return item
+
+    def __setitem__(self, i, y):
+        if type(i) is slice:  # compatibility with py3 and [::] slices
+            start = i.start or 0
+            step = i.step or 1
+            coerced_items = [self._coerce_item(start + index * step, item)
+                             for index, item in enumerate(y)]
+            super(CoercedList, self).__setitem__(i, coerced_items)
+        else:
+            super(CoercedList, self).__setitem__(i, self._coerce_item(i, y))
+
+    def append(self, x):
+        super(CoercedList, self).append(self._coerce_item(len(self) + 1, x))
+
+    def extend(self, t):
+        l = len(self)
+        coerced_items = [self._coerce_item(l + index, item)
+                         for index, item in enumerate(t)]
+        super(CoercedList, self).extend(coerced_items)
+
+    def insert(self, i, x):
+        super(CoercedList, self).insert(i, self._coerce_item(i, x))
+
+    def __iadd__(self, y):
+        l = len(self)
+        coerced_items = [self._coerce_item(l + index, item)
+                         for index, item in enumerate(y)]
+        return super(CoercedList, self).__iadd__(coerced_items)
+
+    def __setslice__(self, i, j, y):
+        coerced_items = [self._coerce_item(i + index, item)
+                         for index, item in enumerate(y)]
+        return super(CoercedList, self).__setslice__(i, j, coerced_items)
+
+
+class CoercedDict(CoercedCollectionMixin, dict):
+    """Dict which coerces its values
+
+    Dict implementation which overrides all element-adding methods and
+    coercing the element(s) being added to the required element type
+    """
+
+    def _coerce_dict(self, d):
+        res = {}
+        for key, element in six.iteritems(d):
+            res[key] = self._coerce_item(key, element)
+        return res
+
+    def _coerce_item(self, key, item):
+        if not isinstance(key, six.string_types):
+            # NOTE(guohliu) In order to keep compatibility with python3
+            # we need to use six.string_types rather than basestring here,
+            # since six.string_types is a tuple, so we need to pass the
+            # real type in.
+            raise KeyTypeError(six.string_types[0], key)
+        if hasattr(self, "_element_type") and self._element_type is not None:
+            att_name = "%s[%s]" % (self._field, key)
+            return self._element_type.coerce(self._obj, att_name, item)
+        else:
+            return item
+
+    def __setitem__(self, key, value):
+        super(CoercedDict, self).__setitem__(key,
+                                             self._coerce_item(key, value))
+
+    def update(self, other=None, **kwargs):
+        if other is not None:
+            super(CoercedDict, self).update(self._coerce_dict(other),
+                                            **self._coerce_dict(kwargs))
+        else:
+            super(CoercedDict, self).update(**self._coerce_dict(kwargs))
+
+    def setdefault(self, key, default=None):
+        return super(CoercedDict, self).setdefault(key,
+                                                   self._coerce_item(key,
+                                                                     default))
+
+
+class CoercedSet(CoercedCollectionMixin, set):
+    """Set which coerces its values
+
+    Dict implementation which overrides all element-adding methods and
+    coercing the element(s) being added to the required element type
+    """
+    def _coerce_element(self, element):
+        if hasattr(self, "_element_type") and self._element_type is not None:
+            return self._element_type.coerce(self._obj,
+                                             "%s[%s]" % (self._field, element),
+                                             element)
+        else:
+            return element
+
+    def _coerce_iterable(self, values):
+        coerced = set()
+        for element in values:
+            coerced.add(self._coerce_element(element))
+        return coerced
+
+    def add(self, value):
+        return super(CoercedSet, self).add(self._coerce_element(value))
+
+    def update(self, values):
+        return super(CoercedSet, self).update(self._coerce_iterable(values))
+
+    def symmetric_difference_update(self, values):
+        return super(CoercedSet, self).symmetric_difference_update(
+            self._coerce_iterable(values))
+
+    def __ior__(self, y):
+        return super(CoercedSet, self).__ior__(self._coerce_iterable(y))
+
+    def __ixor__(self, y):
+        return super(CoercedSet, self).__ixor__(self._coerce_iterable(y))
