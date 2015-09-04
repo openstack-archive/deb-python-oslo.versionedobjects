@@ -20,6 +20,7 @@ import copy
 import logging
 
 import oslo_messaging as messaging
+from oslo_utils import excutils
 import six
 
 from oslo_versionedobjects._i18n import _, _LE
@@ -80,9 +81,10 @@ def _make_class_properties(cls):
             try:
                 return setattr(self, attrname, field_value)
             except Exception:
-                attr = "%s.%s" % (self.obj_name(), name)
-                LOG.exception(_LE('Error setting %(attr)s'), {'attr': attr})
-                raise
+                with excutils.save_and_reraise_exception():
+                    attr = "%s.%s" % (self.obj_name(), name)
+                    LOG.exception(_LE('Error setting %(attr)s'),
+                                  {'attr': attr})
 
         def deleter(self, name=name):
             attrname = _get_attrname(name)
@@ -402,6 +404,25 @@ class VersionedObject(object):
         """Create a copy."""
         return copy.deepcopy(self)
 
+    def _obj_relationship_for(self, field, target_version):
+        # NOTE(danms): We need to be graceful about not having the temporary
+        # version manifest if called from obj_make_compatible().
+        if (not hasattr(self, '_obj_version_manifest') or
+                self._obj_version_manifest is None):
+            try:
+                return self.obj_relationships[field]
+            except KeyError:
+                raise exception.ObjectActionError(
+                    action='obj_make_compatible',
+                    reason='No rule for %s' % field)
+
+        objname = self.fields[field].objname
+        if objname not in self._obj_version_manifest:
+            return
+        # NOTE(danms): Compute a relationship mapping that looks like
+        # what the caller expects.
+        return [(target_version, self._obj_version_manifest[objname])]
+
     def _obj_make_obj_compatible(self, primitive, target_version, field):
         """Backlevel a sub-object based on our versioning rules.
 
@@ -416,47 +437,21 @@ class VersionedObject(object):
         :param:field: The name of the field in this object containing the
                       sub-object to be backported
         """
+        relationship_map = self._obj_relationship_for(field, target_version)
+        if not relationship_map:
+            # NOTE(danms): This means the field was not specified in the
+            # version manifest from the client, so it must not want this
+            # field, so skip.
+            return
 
-        def _do_backport(to_version):
-            obj = getattr(self, field)
-            if not obj:
-                return
-            if isinstance(obj, VersionedObject):
-                obj.obj_make_compatible(
-                    obj._obj_primitive_field(primitive[field], 'data'),
-                    to_version)
-                ver_key = obj._obj_primitive_key('version')
-                primitive[field][ver_key] = to_version
-            elif isinstance(obj, list):
-                for i, element in enumerate(obj):
-                    element.obj_make_compatible(
-                        element._obj_primitive_field(primitive[field][i],
-                                                     'data'),
-                        to_version)
-                    ver_key = element._obj_primitive_key('version')
-                    primitive[field][i][ver_key] = to_version
-
-        target_version = utils.convert_version_to_tuple(target_version)
-        for index, versions in enumerate(self.obj_relationships[field]):
-            my_version, child_version = versions
-            my_version = utils.convert_version_to_tuple(my_version)
-            if target_version < my_version:
-                if index == 0:
-                    # We're backporting to a version from before this
-                    # subobject was added: delete it from the primitive.
-                    del primitive[field]
-                else:
-                    # We're in the gap between index-1 and index, so
-                    # backport to the older version
-                    last_child_version = \
-                        self.obj_relationships[field][index - 1][1]
-                    _do_backport(last_child_version)
-                return
-            elif target_version == my_version:
-                # This is the first mapping that satisfies the
-                # target_version request: backport the object.
-                _do_backport(child_version)
-                return
+        try:
+            _get_subobject_version(target_version,
+                                   relationship_map,
+                                   lambda ver: _do_subobject_backport(
+                                       ver, self, field, primitive))
+        except exception.TargetBeforeSubobjectExistedException:
+            # Subobject did not exist, so delete it from the primitive
+            del primitive[field]
 
     def obj_make_compatible(self, primitive, target_version):
         """Make an object representation compatible with a target version.
@@ -490,31 +485,46 @@ class VersionedObject(object):
                 continue
             if not self.obj_attr_is_set(key):
                 continue
-            if key not in self.obj_relationships:
-                # NOTE(danms): This is really a coding error and shouldn't
-                # happen unless we miss something
-                raise exception.ObjectActionError(
-                    action='obj_make_compatible',
-                    reason='No rule for %s' % key)
             self._obj_make_obj_compatible(primitive, target_version, key)
 
-    def obj_to_primitive(self, target_version=None):
+    def obj_make_compatible_from_manifest(self, primitive, target_version,
+                                          version_manifest):
+        # NOTE(danms): Stash the manifest on the object so we can use it in
+        # the deeper layers. We do this because obj_make_compatible() is
+        # defined library API at this point, yet we need to get this manifest
+        # to the other bits that get called so we can propagate it to child
+        # calls. It's not pretty, but a tactical solution. Ideally we will
+        # either evolve or deprecate obj_make_compatible() in a major version
+        # bump.
+        self._obj_version_manifest = version_manifest
+        try:
+            return self.obj_make_compatible(primitive, target_version)
+        finally:
+            delattr(self, '_obj_version_manifest')
+
+    def obj_to_primitive(self, target_version=None, version_manifest=None):
         """Simple base-case dehydration.
 
         This calls to_primitive() for each item in fields.
         """
+        if target_version is None:
+            target_version = self.VERSION
+        if (utils.convert_version_to_tuple(target_version) >
+                utils.convert_version_to_tuple(self.VERSION)):
+            raise exception.InvalidTargetVersion(version=target_version)
         primitive = dict()
         for name, field in self.fields.items():
             if self.obj_attr_is_set(name):
                 primitive[name] = field.to_primitive(self, name,
                                                      getattr(self, name))
-        if target_version:
-            self.obj_make_compatible(primitive, target_version)
+        if target_version != self.VERSION:
+            self.obj_make_compatible_from_manifest(primitive,
+                                                   target_version,
+                                                   version_manifest)
         obj = {self._obj_primitive_key('name'): self.obj_name(),
                self._obj_primitive_key('namespace'): (
                    self.OBJ_PROJECT_NAMESPACE),
-               self._obj_primitive_key('version'): (target_version or
-                                                    self.VERSION),
+               self._obj_primitive_key('version'): target_version,
                self._obj_primitive_key('data'): primitive}
         if self.obj_what_changed():
             obj[self._obj_primitive_key('changes')] = list(
@@ -711,7 +721,7 @@ class VersionedObjectDictCompat(object):
             setattr(self, key, value)
 
 
-class ObjectListBase(object):
+class ObjectListBase(collections.Sequence):
     """Mixin class for lists of objects.
 
     This mixin class can be added as a base class for an object that
@@ -734,10 +744,6 @@ class ObjectListBase(object):
             self.objects = []
             self._changed_fields.discard('objects')
 
-    def __iter__(self):
-        """List iterator interface."""
-        return iter(self.objects)
-
     def __len__(self):
         """List length."""
         return len(self.objects)
@@ -753,30 +759,31 @@ class ObjectListBase(object):
             return new_obj
         return self.objects[index]
 
-    def __contains__(self, value):
-        """List membership test."""
-        return value in self.objects
-
-    def count(self, value):
-        """List count of value occurrences."""
-        return self.objects.count(value)
-
-    def index(self, value):
-        """List index of value."""
-        return self.objects.index(value)
-
     def sort(self, key=None, reverse=False):
         self.objects.sort(key=key, reverse=reverse)
 
     def obj_make_compatible(self, primitive, target_version):
-        primitives = primitive['objects']
-        child_target_version = self.child_versions.get(target_version, '1.0')
-        for index, item in enumerate(self.objects):
-            self.objects[index].obj_make_compatible(
-                self._obj_primitive_field(primitives[index], 'data'),
-                child_target_version)
-            verkey = self._obj_primitive_key('version')
-            primitives[index][verkey] = child_target_version
+        # Give priority to using child_versions, if that isn't set, try
+        # obj_relationships
+        if self.child_versions:
+            relationships = self.child_versions.items()
+        elif self.obj_relationships:
+            relationships = self._obj_relationship_for('objects',
+                                                       target_version)
+
+        try:
+            # NOTE(rlrossit): If child_versions and obj_relationships weren't
+            # set, just backport to child version 1.0 (maintaining default
+            # behavior)
+            if self.child_versions or self.obj_relationships:
+                _get_subobject_version(target_version, relationships,
+                                       lambda ver: _do_subobject_backport(
+                                           ver, self, 'objects', primitive))
+            else:
+                _do_subobject_backport('1.0', self, 'objects', primitive)
+        except exception.TargetBeforeSubobjectExistedException:
+            # Child did not exist, so delete it from the primitive
+            del primitive['objects']
 
     def obj_what_changed(self):
         changes = set(self._changed_fields)
@@ -798,27 +805,40 @@ class VersionedObjectSerializer(messaging.NoOpSerializer):
     # Base class to use for object hydration
     OBJ_BASE_CLASS = VersionedObject
 
+    def _do_backport(self, context, objprim, objclass):
+        obj_versions = obj_tree_get_versions(objclass.obj_name())
+        indirection_api = self.OBJ_BASE_CLASS.indirection_api
+        try:
+            return indirection_api.object_backport_versions(
+                context, objprim, obj_versions)
+        except NotImplementedError:
+            # FIXME(danms): Maybe start to warn here about deprecation?
+            return indirection_api.object_backport(context, objprim,
+                                                   objclass.VERSION)
+
     def _process_object(self, context, objprim):
         try:
             return self.OBJ_BASE_CLASS.obj_from_primitive(
                 objprim, context=context)
         except exception.IncompatibleObjectVersion:
-            verkey = '%s.version' % self.OBJ_BASE_CLASS.OBJ_SERIAL_NAMESPACE
-            objver = objprim[verkey]
-            if objver.count('.') == 2:
-                # NOTE(danms): For our purposes, the .z part of the version
-                # should be safe to accept without requiring a backport
-                objprim[verkey] = \
-                    '.'.join(objver.split('.')[:2])
-                return self._process_object(context, objprim)
-            namekey = '%s.name' % self.OBJ_BASE_CLASS.OBJ_SERIAL_NAMESPACE
-            objname = objprim[namekey]
-            supported = VersionedObjectRegistry.obj_classes().get(objname, [])
-            if self.OBJ_BASE_CLASS.indirection_api and supported:
-                return self.OBJ_BASE_CLASS.indirection_api.object_backport(
-                    context, objprim, supported[0].VERSION)
-            else:
-                raise
+            with excutils.save_and_reraise_exception(reraise=False) as ctxt:
+                verkey = \
+                    '%s.version' % self.OBJ_BASE_CLASS.OBJ_SERIAL_NAMESPACE
+                objver = objprim[verkey]
+                if objver.count('.') == 2:
+                    # NOTE(danms): For our purposes, the .z part of the version
+                    # should be safe to accept without requiring a backport
+                    objprim[verkey] = \
+                        '.'.join(objver.split('.')[:2])
+                    return self._process_object(context, objprim)
+                namekey = '%s.name' % self.OBJ_BASE_CLASS.OBJ_SERIAL_NAMESPACE
+                objname = objprim[namekey]
+                supported = VersionedObjectRegistry.obj_classes().get(objname,
+                                                                      [])
+                if self.OBJ_BASE_CLASS.indirection_api and supported:
+                    return self._do_backport(context, objprim, supported[0])
+                else:
+                    ctxt.reraise = True
 
     def _process_iterable(self, context, action_fn, values):
         """Process an iterable, taking an action on each value.
@@ -915,6 +935,11 @@ class VersionedObjectIndirectionAPI(object):
         objects for older services, this method services as a translation
         mechanism for older code when receiving objects from newer code.
 
+        NOTE: This older/original method is soon to be deprecated. When a
+        backport is required, the newer object_backport_versions() will be
+        tried, and if it raises NotImplementedError, then we will fall back
+        to this (less optimal) method.
+
         :param context: The context within which to perform the backport
         :param objinst: An instance of a VersionedObject to be backported
         :param target_version: The maximum version of the objinst's class
@@ -922,6 +947,29 @@ class VersionedObjectIndirectionAPI(object):
         :returns: The downgraded instance of objinst
         """
         pass
+
+    def object_backport_versions(self, context, objinst, object_versions):
+        """Perform a backport of an object instance.
+
+        This method is basically just like object_backport() but instead of
+        providing a specific target version for the toplevel object and
+        relying on the service-side mapping to handle sub-objects, this sends
+        a mapping of all the dependent objects and their client-supported
+        versions. The server will backport objects within the tree starting
+        at objinst to the versions specified in object_versions, removing
+        objects that have no entry. Use obj_tree_get_versions() to generate
+        this mapping.
+
+        NOTE: This was not in the initial spec for this interface, so the
+        base class raises NotImplementedError if you don't implement it.
+        For backports, this method will be tried first, and if unimplemented,
+        will fall back to object_backport().
+
+        :param context: The context within which to perform the backport
+        :param objinst: An instance of a VersionedObject to be backported
+        :param object_versions: A dict of {objname: version} mappings
+        """
+        raise NotImplementedError('Multi-version backport not supported')
 
 
 def obj_make_list(context, list_obj, item_cls, db_list, **extra_args):
@@ -945,3 +993,94 @@ def obj_make_list(context, list_obj, item_cls, db_list, **extra_args):
     list_obj._context = context
     list_obj.obj_reset_changes()
     return list_obj
+
+
+def obj_tree_get_versions(objname, tree=None):
+    """Construct a mapping of dependent object versions.
+
+    This method builds a list of dependent object versions given a top-
+    level object with other objects as fields. It walks the tree recursively
+    to deterine all the objects (by symbolic name) that could be contained
+    within the top-level object, and the maximum versions of each. The result
+    is a dict like:
+
+      {'MyObject': '1.23', ... }
+
+    :param:objname: The top-level object at which to start
+    :param:tree: Used internally, pass None here.
+    :returns: A dictionary of object names and versions
+    """
+    if tree is None:
+        tree = {}
+    if objname in tree:
+        return tree
+    objclass = VersionedObjectRegistry.obj_classes()[objname][0]
+    tree[objname] = objclass.VERSION
+    for field_name in objclass.fields:
+        field = objclass.fields[field_name]
+        if isinstance(field, obj_fields.ObjectField):
+            child_cls = field._type._obj_name
+        elif isinstance(field, obj_fields.ListOfObjectsField):
+            child_cls = field._type._element_type._type._obj_name
+        else:
+            continue
+
+        obj_tree_get_versions(child_cls, tree=tree)
+    return tree
+
+
+def _get_subobject_version(tgt_version, relationships, backport_func):
+    """Get the version to which we need to convert a subobject.
+
+    This uses the relationships between a parent and a subobject,
+    along with the target parent version, to decide the version we need
+    to convert a subobject to. If the subobject did not exist in the parent at
+    the target version, TargetBeforeChildExistedException is raised. If there
+    is a need to backport, backport_func is called and the subobject version
+    to backport to is passed in.
+
+    :param tgt_version: The version we are converting the parent to
+    :param relationships: A list of (parent, subobject) version tuples
+    :param backport_func: A backport function that takes in the subobject
+                          version
+    :returns: The version we need to convert the subobject to
+    """
+    tgt = utils.convert_version_to_tuple(tgt_version)
+    for index, versions in enumerate(relationships):
+        parent, child = versions
+        parent = utils.convert_version_to_tuple(parent)
+        if tgt < parent:
+            if index == 0:
+                # We're backporting to a version of the parent that did
+                # not contain this subobject
+                raise exception.TargetBeforeSubobjectExistedException(
+                    target_version=tgt_version)
+            else:
+                # We're in a gap between index-1 and index, so set the desired
+                # version to the previous index's version
+                child = relationships[index - 1][1]
+                backport_func(child)
+            return
+        elif tgt == parent:
+            # We found the version we want, so backport to it
+            backport_func(child)
+            return
+
+
+def _do_subobject_backport(to_version, parent, field, primitive):
+    obj = getattr(parent, field)
+    manifest = (hasattr(parent, '_obj_version_manifest') and
+                parent._obj_version_manifest or None)
+    if isinstance(obj, VersionedObject):
+        obj.obj_make_compatible_from_manifest(
+            obj._obj_primitive_field(primitive[field], 'data'),
+            to_version, version_manifest=manifest)
+        ver_key = obj._obj_primitive_key('version')
+        primitive[field][ver_key] = to_version
+    elif isinstance(obj, list):
+        for i, element in enumerate(obj):
+            element.obj_make_compatible_from_manifest(
+                element._obj_primitive_field(primitive[field][i], 'data'),
+                to_version, version_manifest=manifest)
+            ver_key = element._obj_primitive_key('version')
+            primitive[field][i][ver_key] = to_version

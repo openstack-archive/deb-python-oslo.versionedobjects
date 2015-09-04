@@ -14,6 +14,8 @@
 
 import abc
 import datetime
+from distutils import versionpredicate
+
 
 import copy
 import iso8601
@@ -22,6 +24,7 @@ from oslo_utils import timeutils
 import six
 
 from oslo_versionedobjects._i18n import _
+from oslo_versionedobjects import _utils
 from oslo_versionedobjects import exception
 
 
@@ -250,6 +253,18 @@ class String(FieldType):
         return '\'%s\'' % value
 
 
+class VersionPredicate(String):
+    @staticmethod
+    def coerce(obj, attr, value):
+        try:
+            versionpredicate.VersionPredicate('check (%s)' % value)
+        except ValueError:
+            raise ValueError(_('Version %(val)s is not a valid predicate in '
+                               'field %(attr)s') %
+                             {'val': value, 'attr': attr})
+        return value
+
+
 class Enum(String):
     def __init__(self, valid_values, **kwargs):
         if not valid_values:
@@ -335,11 +350,11 @@ class DateTime(FieldType):
 
     @staticmethod
     def to_primitive(obj, attr, value):
-        return timeutils.isotime(value)
+        return _utils.isotime(value)
 
     @staticmethod
     def stringify(value):
-        return timeutils.isotime(value)
+        return _utils.isotime(value)
 
 
 class CompoundFieldType(FieldType):
@@ -503,7 +518,7 @@ class Object(FieldType):
         # pass them back unchanged
         if isinstance(value, obj_base.VersionedObject):
             return value
-        return obj_base.VersionedObject.obj_from_primitive(value, obj._context)
+        return obj.obj_from_primitive(value, obj._context)
 
     def describe(self):
         return "Object<%s>" % self._obj_name
@@ -530,6 +545,10 @@ class AutoTypedField(Field):
 
 class StringField(AutoTypedField):
     AUTO_TYPE = String()
+
+
+class VersionPredicateField(AutoTypedField):
+    AUTO_TYPE = VersionPredicate()
 
 
 class BaseEnumField(AutoTypedField):
@@ -628,6 +647,10 @@ class ListOfStringsField(AutoTypedField):
     AUTO_TYPE = List(String())
 
 
+class DictOfListOfStringsField(AutoTypedField):
+    AUTO_TYPE = Dict(List(String()))
+
+
 class ListOfEnumField(AutoTypedField):
     def __init__(self, valid_values, **kwargs):
         self.AUTO_TYPE = List(Enum(valid_values))
@@ -660,12 +683,14 @@ class ListOfDictOfNullableStringsField(AutoTypedField):
 class ObjectField(AutoTypedField):
     def __init__(self, objtype, subclasses=False, **kwargs):
         self.AUTO_TYPE = Object(objtype, subclasses)
+        self.objname = objtype
         super(ObjectField, self).__init__(**kwargs)
 
 
 class ListOfObjectsField(AutoTypedField):
     def __init__(self, objtype, subclasses=False, **kwargs):
         self.AUTO_TYPE = List(Object(objtype, subclasses))
+        self.objname = objtype
         super(ListOfObjectsField, self).__init__(**kwargs)
 
 

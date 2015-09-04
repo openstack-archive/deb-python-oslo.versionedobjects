@@ -15,9 +15,10 @@
 import datetime
 
 import iso8601
-from oslo_utils import timeutils
+import mock
 import six
 
+from oslo_versionedobjects import _utils
 from oslo_versionedobjects import base as obj_base
 from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields
@@ -116,6 +117,18 @@ class TestString(TestField):
 
     def test_stringify(self):
         self.assertEqual("'123'", self.field.stringify(123))
+
+
+class TestVersionPredicate(TestString):
+    def setUp(self):
+        super(TestVersionPredicate, self).setUp()
+        self.field = fields.VersionPredicateField()
+        self.coerce_good_values = [('>=1.0', '>=1.0'),
+                                   ('==1.1', '==1.1'),
+                                   ('<1.1.0', '<1.1.0')]
+        self.coerce_bad_values = ['1', 'foo', '>1', 1.0, '1.0', '=1.0']
+        self.to_primitive_values = self.coerce_good_values[0:1]
+        self.from_primitive_values = self.coerce_good_values[0:1]
 
 
 class TestBaseEnum(TestField):
@@ -233,10 +246,10 @@ class TestDateTime(TestField):
         self.dt = datetime.datetime(1955, 11, 5, tzinfo=iso8601.iso8601.Utc())
         self.field = fields.DateTimeField()
         self.coerce_good_values = [(self.dt, self.dt),
-                                   (timeutils.isotime(self.dt), self.dt)]
+                                   (_utils.isotime(self.dt), self.dt)]
         self.coerce_bad_values = [1, 'foo']
-        self.to_primitive_values = [(self.dt, timeutils.isotime(self.dt))]
-        self.from_primitive_values = [(timeutils.isotime(self.dt), self.dt)]
+        self.to_primitive_values = [(self.dt, _utils.isotime(self.dt))]
+        self.from_primitive_values = [(_utils.isotime(self.dt), self.dt)]
 
     def test_stringify(self):
         self.assertEqual(
@@ -252,12 +265,12 @@ class TestDateTimeNoTzinfo(TestField):
         self.dt = datetime.datetime(1955, 11, 5)
         self.field = fields.DateTimeField(tzinfo_aware=False)
         self.coerce_good_values = [(self.dt, self.dt),
-                                   (timeutils.isotime(self.dt), self.dt)]
+                                   (_utils.isotime(self.dt), self.dt)]
         self.coerce_bad_values = [1, 'foo']
-        self.to_primitive_values = [(self.dt, timeutils.isotime(self.dt))]
+        self.to_primitive_values = [(self.dt, _utils.isotime(self.dt))]
         self.from_primitive_values = [
             (
-                timeutils.isotime(self.dt),
+                _utils.isotime(self.dt),
                 self.dt,
             )
         ]
@@ -378,6 +391,22 @@ class TestListOfStrings(TestField):
         self.assertEqual("['abc']", self.field.stringify(['abc']))
 
 
+class TestDictOfListOfStrings(TestField):
+    def setUp(self):
+        super(TestDictOfListOfStrings, self).setUp()
+        self.field = fields.DictOfListOfStringsField()
+        self.coerce_good_values = [({'foo': ['1', '2']}, {'foo': ['1', '2']}),
+                                   ({'foo': [1]}, {'foo': ['1']})]
+        self.coerce_bad_values = [{'foo': [None, None]}, 'foo']
+        self.to_primitive_values = [({'foo': ['1', '2']}, {'foo': ['1', '2']})]
+        self.from_primitive_values = [({'foo': ['1', '2']},
+                                       {'foo': ['1', '2']})]
+
+    def test_stringify(self):
+        self.assertEqual("{foo=['1','2']}",
+                         self.field.stringify({'foo': ['1', '2']}))
+
+
 class TestListOfEnum(TestField):
     def setUp(self):
         super(TestListOfEnum, self).setUp()
@@ -443,6 +472,36 @@ class TestListOfSetsOfIntegers(TestField):
         self.assertEqual('[set([1,2])]', self.field.stringify([set([1, 2])]))
 
 
+class TestLocalMethods(test.TestCase):
+    @mock.patch.object(obj_base.LOG, 'exception')
+    def test__make_class_properties_setter_value_error(self, mock_log):
+        @obj_base.VersionedObjectRegistry.register
+        class AnObject(obj_base.VersionedObject):
+            fields = {
+                'intfield': fields.IntegerField(),
+            }
+
+        self.assertRaises(ValueError, AnObject, intfield='badvalue')
+        self.assertFalse(mock_log.called)
+
+    @mock.patch.object(obj_base.LOG, 'exception')
+    def test__make_class_properties_setter_setattr_fails(self, mock_log):
+        @obj_base.VersionedObjectRegistry.register
+        class AnObject(obj_base.VersionedObject):
+            fields = {
+                'intfield': fields.IntegerField(),
+            }
+
+        # We want the setattr() call in _make_class_properties.setter() to
+        # raise an exception
+        with mock.patch.object(obj_base, '_get_attrname') as mock_attr:
+            mock_attr.return_value = '__class__'
+            self.assertRaises(TypeError, AnObject, intfield=2)
+            mock_attr.assert_called_once_with('intfield')
+            mock_log.assert_called_once_with(mock.ANY,
+                                             {'attr': 'AnObject.intfield'})
+
+
 class TestObject(TestField):
     def setUp(self):
         super(TestObject, self).setUp()
@@ -476,6 +535,32 @@ class TestObject(TestField):
         obj = self._test_cls(uuid='fake-uuid')
         self.assertEqual('TestableObject(fake-uuid)',
                          self.field.stringify(obj))
+
+    def test_from_primitive(self):
+        @obj_base.VersionedObjectRegistry.register
+        class TestFakeObject(obj_base.VersionedObject):
+            OBJ_PROJECT_NAMESPACE = 'fake-project'
+
+        @obj_base.VersionedObjectRegistry.register
+        class TestBar(TestFakeObject, obj_base.ComparableVersionedObject):
+            fields = {
+                'name': fields.StringField(),
+            }
+
+        @obj_base.VersionedObjectRegistry.register
+        class TestFoo(TestFakeObject, obj_base.ComparableVersionedObject):
+            fields = {
+                'name': fields.StringField(),
+                'bar': fields.ObjectField('TestBar')
+            }
+
+        bar = TestBar(name='bar')
+        foo = TestFoo(name='foo', bar=bar)
+        from_primitive_values = [(foo.obj_to_primitive(), foo), (foo, foo)]
+
+        for prim_val, out_val in from_primitive_values:
+            self.assertEqual(out_val, self.field.from_primitive(
+                foo, 'attr', prim_val))
 
     def test_inheritance(self):
         # We need a whole lot of classes in a hierarchy to

@@ -312,6 +312,119 @@ class TestObjMakeList(test.TestCase):
             self.assertEqual(db_objs[index]['missing'], item.missing)
 
 
+class TestGetSubobjectVersion(test.TestCase):
+    def setUp(self):
+        super(TestGetSubobjectVersion, self).setUp()
+        self.backport_mock = mock.MagicMock()
+        self.rels = [('1.1', '1.0'), ('1.3', '1.1')]
+
+    def test_get_subobject_version_not_existing(self):
+        # Verify that exception is raised if we try backporting
+        # to a version where we did not contain the subobject
+        self.assertRaises(exception.TargetBeforeSubobjectExistedException,
+                          base._get_subobject_version, '1.0', self.rels,
+                          self.backport_mock)
+
+    def test_get_subobject_version_explicit_version(self):
+        # Verify that we backport to the correct subobject version when the
+        # version we are going back to is explicitly said in the relationships
+        base._get_subobject_version('1.3', self.rels, self.backport_mock)
+        self.backport_mock.assert_called_once_with('1.1')
+
+    def test_get_subobject_version_implicit_version(self):
+        # Verify that we backport to the correct subobject version when the
+        # version backporting to is not explicitly stated in the relationships
+        base._get_subobject_version('1.2', self.rels, self.backport_mock)
+        self.backport_mock.assert_called_once_with('1.0')
+
+
+class TestDoSubobjectBackport(test.TestCase):
+    @base.VersionedObjectRegistry.register
+    class ParentObj(base.VersionedObject):
+        VERSION = '1.1'
+        fields = {'child': fields.ObjectField('ChildObj', nullable=True)}
+        obj_relationships = {'child': [('1.0', '1.0'), ('1.1', '1.1')]}
+
+    @base.VersionedObjectRegistry.register
+    class ParentObjList(base.VersionedObject, base.ObjectListBase):
+        VERSION = '1.1'
+        fields = {'objects': fields.ListOfObjectsField('ChildObj')}
+        obj_relationships = {'objects': [('1.0', '1.0'), ('1.1', '1.1')]}
+
+    @base.VersionedObjectRegistry.register
+    class ChildObj(base.VersionedObject):
+        VERSION = '1.1'
+        fields = {'foo': fields.IntegerField()}
+
+    def test_do_subobject_backport_without_manifest(self):
+        child = self.ChildObj(foo=1)
+        parent = self.ParentObj(child=child)
+        parent_primitive = parent.obj_to_primitive()['versioned_object.data']
+        primitive = child.obj_to_primitive()['versioned_object.data']
+        version = '1.0'
+
+        compat_func = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(child, compat_func) as mock_compat:
+            base._do_subobject_backport(version, parent, 'child',
+                                        parent_primitive)
+            mock_compat.assert_called_once_with(primitive,
+                                                version,
+                                                version_manifest=None)
+
+    def test_do_subobject_backport_with_manifest(self):
+        child = self.ChildObj(foo=1)
+        parent = self.ParentObj(child=child)
+        parent_primitive = parent.obj_to_primitive()['versioned_object.data']
+        primitive = child.obj_to_primitive()['versioned_object.data']
+        version = '1.0'
+        manifest = {'ChildObj': '1.0'}
+        parent._obj_version_manifest = manifest
+
+        compat_func = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(child, compat_func) as mock_compat:
+            base._do_subobject_backport(version, parent, 'child',
+                                        parent_primitive)
+            mock_compat.assert_called_once_with(primitive,
+                                                version,
+                                                version_manifest=manifest)
+
+    def test_do_subobject_backport_list_object(self):
+        child = self.ChildObj(foo=1)
+        parent = self.ParentObjList(objects=[child])
+        parent_primitive = parent.obj_to_primitive()['versioned_object.data']
+        primitive = child.obj_to_primitive()['versioned_object.data']
+        version = '1.0'
+
+        compat_func = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(child, compat_func) as mock_compat:
+            base._do_subobject_backport(version, parent, 'objects',
+                                        parent_primitive)
+            mock_compat.assert_called_once_with(primitive,
+                                                version,
+                                                version_manifest=None)
+
+    def test_do_subobject_backport_null_child(self):
+        parent = self.ParentObj(child=None)
+        parent_primitive = parent.obj_to_primitive()['versioned_object.data']
+        version = '1.0'
+
+        compat_func = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(self.ChildObj, compat_func) as mock_compat:
+            base._do_subobject_backport(version, parent, 'child',
+                                        parent_primitive)
+            self.assertFalse(mock_compat.called,
+                             "obj_make_compatible_from_manifest() should not "
+                             "have been called because the subobject is "
+                             "None.")
+
+    def test_to_primitive_calls_make_compatible_manifest(self):
+        obj = self.ParentObj()
+        with mock.patch.object(obj, 'obj_make_compatible_from_manifest') as m:
+            obj.obj_to_primitive(target_version='1.0',
+                                 version_manifest=mock.sentinel.manifest)
+            m.assert_called_once_with(mock.ANY, '1.0', mock.sentinel.manifest)
+
+
 def compare_obj(test, obj, db_obj, subs=None, allow_missing=None,
                 comparators=None):
     """Compare a VersionedObject and a dict-like database object.
@@ -648,6 +761,25 @@ class _TestObject(object):
         obj.obj_reset_changes()
         self.assertEqual(obj.obj_to_primitive(), expected)
 
+    def test_dehydration_invalid_version(self):
+        obj = MyObj(foo=1)
+        obj.obj_reset_changes()
+        self.assertRaises(exception.InvalidTargetVersion,
+                          obj.obj_to_primitive,
+                          target_version='1.7')
+
+    def test_dehydration_same_version(self):
+        expected = {'versioned_object.name': 'MyObj',
+                    'versioned_object.namespace': 'versionedobjects',
+                    'versioned_object.version': '1.6',
+                    'versioned_object.data': {'foo': 1}}
+        obj = MyObj(foo=1)
+        obj.obj_reset_changes()
+        with mock.patch.object(obj, 'obj_make_compatible') as mock_compat:
+            self.assertEqual(
+                obj.obj_to_primitive(target_version='1.6'), expected)
+            self.assertFalse(mock_compat.called)
+
     def test_object_property(self):
         obj = MyObj(foo=1)
         self.assertEqual(obj.foo, 1)
@@ -960,7 +1092,7 @@ class _TestObject(object):
                          'rel_object=<?>,rel_objects=<?>)',
                          repr(obj))
 
-    def test_obj_make_obj_compatible(self):
+    def test_obj_make_obj_compatible_with_relationships(self):
         subobj = MyOwnedObject(baz=1)
         obj = MyObj(rel_object=subobj)
         obj.obj_relationships = {
@@ -1002,7 +1134,7 @@ class _TestObject(object):
             self.assertFalse(mock_compat.called)
             self.assertNotIn('rel_object', _prim)
 
-    def test_obj_make_compatible_hits_sub_objects(self):
+    def test_obj_make_compatible_hits_sub_objects_with_rels(self):
         subobj = MyOwnedObject(baz=1)
         obj = MyObj(foo=123, rel_object=subobj)
         obj.obj_relationships = {'rel_object': [('1.0', '1.0')]}
@@ -1011,26 +1143,26 @@ class _TestObject(object):
             mock_compat.assert_called_once_with({'rel_object': 'foo'}, '1.10',
                                                 'rel_object')
 
-    def test_obj_make_compatible_skips_unset_sub_objects(self):
+    def test_obj_make_compatible_skips_unset_sub_objects_with_rels(self):
         obj = MyObj(foo=123)
         obj.obj_relationships = {'rel_object': [('1.0', '1.0')]}
         with mock.patch.object(obj, '_obj_make_obj_compatible') as mock_compat:
             obj.obj_make_compatible({'rel_object': 'foo'}, '1.10')
             self.assertFalse(mock_compat.called)
 
-    def test_obj_make_compatible_complains_about_missing_rules(self):
+    def test_obj_make_compatible_complains_about_missing_rel_rules(self):
         subobj = MyOwnedObject(baz=1)
         obj = MyObj(foo=123, rel_object=subobj)
         obj.obj_relationships = {}
         self.assertRaises(exception.ObjectActionError,
                           obj.obj_make_compatible, {}, '1.0')
 
-    def test_obj_make_compatible_handles_list_of_objects(self):
+    def test_obj_make_compatible_handles_list_of_objects_with_rels(self):
         subobj = MyOwnedObject(baz=1)
         obj = MyObj(rel_objects=[subobj])
         obj.obj_relationships = {'rel_objects': [('1.0', '1.123')]}
 
-        def fake_make_compat(primitive, version):
+        def fake_make_compat(primitive, version, **k):
             self.assertEqual('1.123', version)
             self.assertIn('baz', primitive)
 
@@ -1038,6 +1170,71 @@ class _TestObject(object):
             mock_mc.side_effect = fake_make_compat
             obj.obj_to_primitive('1.0')
             self.assertTrue(mock_mc.called)
+
+    def test_obj_make_compatible_with_manifest(self):
+        subobj = MyOwnedObject(baz=1)
+        obj = MyObj(rel_object=subobj)
+        obj.obj_relationships = {}
+        orig_primitive = obj.obj_to_primitive()['versioned_object.data']
+
+        with mock.patch.object(subobj, 'obj_make_compatible') as mock_compat:
+            manifest = {'MyOwnedObject': '1.2'}
+            primitive = copy.deepcopy(orig_primitive)
+            obj.obj_make_compatible_from_manifest(primitive, '1.5', manifest)
+            mock_compat.assert_called_once_with(
+                primitive['rel_object']['versioned_object.data'], '1.2')
+            self.assertEqual(
+                '1.2',
+                primitive['rel_object']['versioned_object.version'])
+
+        with mock.patch.object(subobj, 'obj_make_compatible') as mock_compat:
+            manifest = {'MyOwnedObject': '1.0'}
+            primitive = copy.deepcopy(orig_primitive)
+            obj.obj_make_compatible_from_manifest(primitive, '1.5', manifest)
+            mock_compat.assert_called_once_with(
+                primitive['rel_object']['versioned_object.data'], '1.0')
+            self.assertEqual(
+                '1.0',
+                primitive['rel_object']['versioned_object.version'])
+
+        with mock.patch.object(subobj, 'obj_make_compatible') as mock_compat:
+            manifest = {}
+            primitive = copy.deepcopy(orig_primitive)
+            obj.obj_make_compatible_from_manifest(primitive, '1.5', manifest)
+            self.assertFalse(mock_compat.called)
+            self.assertEqual(
+                '1.0',
+                primitive['rel_object']['versioned_object.version'])
+
+    def test_obj_make_compatible_with_manifest_subobj(self):
+        # Make sure that we call the subobject's "from_manifest" method
+        # as well
+        subobj = MyOwnedObject(baz=1)
+        obj = MyObj(rel_object=subobj)
+        obj.obj_relationships = {}
+        manifest = {'MyOwnedObject': '1.2'}
+        primitive = obj.obj_to_primitive()['versioned_object.data']
+        method = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(subobj, method) as mock_compat:
+            obj.obj_make_compatible_from_manifest(primitive, '1.5', manifest)
+            mock_compat.assert_called_once_with(
+                primitive['rel_object']['versioned_object.data'],
+                '1.2', version_manifest=manifest)
+
+    def test_obj_make_compatible_with_manifest_subobj_list(self):
+        # Make sure that we call the subobject's "from_manifest" method
+        # as well
+        subobj = MyOwnedObject(baz=1)
+        obj = MyObj(rel_objects=[subobj])
+        obj.obj_relationships = {}
+        manifest = {'MyOwnedObject': '1.2'}
+        primitive = obj.obj_to_primitive()['versioned_object.data']
+        method = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(subobj, method) as mock_compat:
+            obj.obj_make_compatible_from_manifest(primitive, '1.5', manifest)
+            mock_compat.assert_called_once_with(
+                primitive['rel_objects'][0]['versioned_object.data'],
+                '1.2', version_manifest=manifest)
 
     def test_delattr(self):
         obj = MyObj(bar='foo')
@@ -1061,9 +1258,11 @@ class _TestObject(object):
 
         childobj = MyObj(foo=1)
         listobj = MyList(objects=[childobj])
-        with mock.patch.object(childobj, 'obj_make_compatible') as mock_compat:
+        compat_func = 'obj_make_compatible_from_manifest'
+        with mock.patch.object(childobj, compat_func) as mock_compat:
             listobj.obj_to_primitive(target_version='1.0')
-            mock_compat.assert_called_once_with({'foo': 1}, '1.0')
+            mock_compat.assert_called_once_with({'foo': 1}, '1.0',
+                                                version_manifest=None)
 
     def test_comparable_objects(self):
         obj1 = MyComparableObj(foo=1)
@@ -1394,6 +1593,64 @@ class TestObjectListBase(test.TestCase):
                 if issubclass(obj_class, base.ObjectListBase):
                     self._test_object_list_version_mappings(obj_class)
 
+    def test_obj_make_compatible_child_versions(self):
+        @base.VersionedObjectRegistry.register
+        class MyElement(base.VersionedObject):
+            fields = {'foo': fields.IntegerField()}
+
+        @base.VersionedObjectRegistry.register
+        class Foo(base.ObjectListBase, base.VersionedObject):
+            VERSION = '1.1'
+            fields = {'objects': fields.ListOfObjectsField('MyElement')}
+            child_versions = {'1.0': '1.0', '1.1': '1.0'}
+
+        subobj = MyElement(foo=1)
+        obj = Foo(objects=[subobj])
+        primitive = obj.obj_to_primitive()['versioned_object.data']
+
+        with mock.patch.object(subobj, 'obj_make_compatible') as mock_compat:
+            obj.obj_make_compatible(copy.copy(primitive), '1.1')
+            self.assertTrue(mock_compat.called)
+
+    def test_obj_make_compatible_obj_relationships(self):
+        @base.VersionedObjectRegistry.register
+        class MyElement(base.VersionedObject):
+            fields = {'foo': fields.IntegerField()}
+
+        @base.VersionedObjectRegistry.register
+        class Bar(base.ObjectListBase, base.VersionedObject):
+            VERSION = '1.1'
+            fields = {'objects': fields.ListOfObjectsField('MyElement')}
+            obj_relationships = {
+                'objects': [('1.0', '1.0'), ('1.1', '1.0')]
+            }
+
+        subobj = MyElement(foo=1)
+        obj = Bar(objects=[subobj])
+        primitive = obj.obj_to_primitive()['versioned_object.data']
+
+        with mock.patch.object(subobj, 'obj_make_compatible') as mock_compat:
+            obj.obj_make_compatible(copy.copy(primitive), '1.1')
+            self.assertTrue(mock_compat.called)
+
+    def test_obj_make_compatible_no_relationships(self):
+        @base.VersionedObjectRegistry.register
+        class MyElement(base.VersionedObject):
+            fields = {'foo': fields.IntegerField()}
+
+        @base.VersionedObjectRegistry.register
+        class Baz(base.ObjectListBase, base.VersionedObject):
+            VERSION = '1.1'
+            fields = {'objects': fields.ListOfObjectsField('MyElement')}
+
+        subobj = MyElement(foo=1)
+        obj = Baz(objects=[subobj])
+        primitive = obj.obj_to_primitive()['versioned_object.data']
+
+        with mock.patch.object(subobj, 'obj_make_compatible') as mock_compat:
+            obj.obj_make_compatible(copy.copy(primitive), '1.1')
+            self.assertTrue(mock_compat.called)
+
     def test_list_changes(self):
         @base.VersionedObjectRegistry.register
         class Foo(base.ObjectListBase, base.VersionedObject):
@@ -1458,7 +1715,7 @@ class TestObjectSerializer(_BaseTestCase):
                                        mock_iapi,
                                        my_version='1.6'):
         ser = base.VersionedObjectSerializer()
-        mock_iapi.object_backport.return_value = 'backported'
+        mock_iapi.object_backport_versions.return_value = 'backported'
 
         @base.VersionedObjectRegistry.register
         class MyTestObj(MyObj):
@@ -1469,12 +1726,12 @@ class TestObjectSerializer(_BaseTestCase):
         primitive = obj.obj_to_primitive()
         result = ser.deserialize_entity(self.context, primitive)
         if backported_to is None:
-            self.assertFalse(mock_iapi.object_backport.called)
+            self.assertFalse(mock_iapi.object_backport_versions.called)
         else:
             self.assertEqual('backported', result)
-            mock_iapi.object_backport.assert_called_with(self.context,
-                                                         primitive,
-                                                         backported_to)
+            mock_iapi.object_backport_versions.assert_called_with(
+                self.context, primitive, {'MyTestObj': my_version,
+                                          'MyOwnedObject': '1.0'})
 
     def test_deserialize_entity_newer_version_backports(self):
         self._test_deserialize_entity_newer('1.25', '1.6')
@@ -1506,7 +1763,15 @@ class TestObjectSerializer(_BaseTestCase):
         # .0 of the object.
         self.assertEqual('1.6', obj.VERSION)
 
-    def test_nested_backport(self):
+    def test_deserialize_entity_newer_version_no_indirection(self):
+        ser = base.VersionedObjectSerializer()
+        obj = MyObj()
+        obj.VERSION = '1.25'
+        primitive = obj.obj_to_primitive()
+        self.assertRaises(exception.IncompatibleObjectVersion,
+                          ser.deserialize_entity, self.context, primitive)
+
+    def _test_nested_backport(self, old):
         @base.VersionedObjectRegistry.register
         class Parent(base.VersionedObject):
             VERSION = '1.0'
@@ -1530,12 +1795,25 @@ class TestObjectSerializer(_BaseTestCase):
         child_prim['versioned_object.version'] = '1.10'
         ser = base.VersionedObjectSerializer()
         with mock.patch.object(base.VersionedObject, 'indirection_api') as a:
+            if old:
+                a.object_backport_versions.side_effect = NotImplementedError
             ser.deserialize_entity(self.context, prim)
-            # NOTE(danms): This should be the version of the parent object,
-            # not the child. If wrong, this will be '1.6', which is the max
-            # child version in our registry.
-            a.object_backport.assert_called_once_with(self.context, prim,
-                                                      '1.1')
+            a.object_backport_versions.assert_called_once_with(
+                self.context, prim, {'Parent': '1.1',
+                                     'MyObj': '1.6',
+                                     'MyOwnedObject': '1.0'})
+            if old:
+                # NOTE(danms): This should be the version of the parent object,
+                # not the child. If wrong, this will be '1.6', which is the max
+                # child version in our registry.
+                a.object_backport.assert_called_once_with(
+                    self.context, prim, '1.1')
+
+    def test_nested_backport_new_method(self):
+        self._test_nested_backport(old=False)
+
+    def test_nested_backport_old_method(self):
+        self._test_nested_backport(old=True)
 
     def test_object_serialization(self):
         ser = base.VersionedObjectSerializer()
@@ -1627,7 +1905,23 @@ class TestObjectSerializer(_BaseTestCase):
         prim = MyNSObj(foo=1).obj_to_primitive()
         prim['foo.version'] = '2.0'
         ser.deserialize_entity(mock.sentinel.context, prim)
-        MyNSObj.indirection_api.object_backport.assert_called_once_with(
+        indirection_api = MyNSObj.indirection_api
+        indirection_api.object_backport_versions.assert_called_once_with(
+            mock.sentinel.context, prim, {'MyNSObj': '1.0'})
+
+    @mock.patch('oslo_versionedobjects.base.VersionedObject.indirection_api')
+    def test_serializer_calls_old_backport_interface(self, indirection_api):
+        @base.VersionedObjectRegistry.register
+        class MyOldObj(base.VersionedObject):
+            pass
+
+        ser = base.VersionedObjectSerializer()
+        prim = MyOldObj(foo=1).obj_to_primitive()
+        prim['versioned_object.version'] = '2.0'
+        indirection_api.object_backport_versions.side_effect = (
+            NotImplementedError('Old'))
+        ser.deserialize_entity(mock.sentinel.context, prim)
+        indirection_api.object_backport.assert_called_once_with(
             mock.sentinel.context, prim, '1.0')
 
 
@@ -1673,3 +1967,87 @@ class TestNamespaceCompatibility(test.TestCase):
         }
         self.assertRaises(exception.UnsupportedObjectError,
                           self.test_class.obj_from_primitive, primitive)
+
+
+class TestUtilityMethods(test.TestCase):
+    def test_flat(self):
+        @base.VersionedObjectRegistry.register
+        class TestObject(base.VersionedObject):
+            VERSION = '1.23'
+            fields = {}
+
+        tree = base.obj_tree_get_versions('TestObject')
+        self.assertEqual({'TestObject': '1.23'}, tree)
+
+    def test_parent_child(self):
+        @base.VersionedObjectRegistry.register
+        class TestChild(base.VersionedObject):
+            VERSION = '2.34'
+
+        @base.VersionedObjectRegistry.register
+        class TestObject(base.VersionedObject):
+            VERSION = '1.23'
+            fields = {
+                'child': fields.ObjectField('TestChild'),
+            }
+
+        tree = base.obj_tree_get_versions('TestObject')
+        self.assertEqual({'TestObject': '1.23',
+                          'TestChild': '2.34'},
+                         tree)
+
+    def test_complex(self):
+        @base.VersionedObjectRegistry.register
+        class TestChild(base.VersionedObject):
+            VERSION = '2.34'
+
+        @base.VersionedObjectRegistry.register
+        class TestChildTwo(base.VersionedObject):
+            VERSION = '4.56'
+            fields = {
+                'sibling': fields.ObjectField('TestChild'),
+            }
+
+        @base.VersionedObjectRegistry.register
+        class TestObject(base.VersionedObject):
+            VERSION = '1.23'
+            fields = {
+                'child': fields.ObjectField('TestChild'),
+                'childtwo': fields.ListOfObjectsField('TestChildTwo'),
+            }
+
+        tree = base.obj_tree_get_versions('TestObject')
+        self.assertEqual({'TestObject': '1.23',
+                          'TestChild': '2.34',
+                          'TestChildTwo': '4.56'},
+                         tree)
+
+    def test_complex_loopy(self):
+        @base.VersionedObjectRegistry.register
+        class TestChild(base.VersionedObject):
+            VERSION = '2.34'
+            fields = {
+                'sibling': fields.ObjectField('TestChildTwo'),
+            }
+
+        @base.VersionedObjectRegistry.register
+        class TestChildTwo(base.VersionedObject):
+            VERSION = '4.56'
+            fields = {
+                'sibling': fields.ObjectField('TestChild'),
+                'parents': fields.ListOfObjectsField('TestObject'),
+            }
+
+        @base.VersionedObjectRegistry.register
+        class TestObject(base.VersionedObject):
+            VERSION = '1.23'
+            fields = {
+                'child': fields.ObjectField('TestChild'),
+                'childtwo': fields.ListOfObjectsField('TestChildTwo'),
+            }
+
+        tree = base.obj_tree_get_versions('TestObject')
+        self.assertEqual({'TestObject': '1.23',
+                          'TestChild': '2.34',
+                          'TestChildTwo': '4.56'},
+                         tree)
