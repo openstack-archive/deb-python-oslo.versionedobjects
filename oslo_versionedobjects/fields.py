@@ -15,15 +15,16 @@
 import abc
 import datetime
 from distutils import versionpredicate
-
+import re
 
 import copy
 import iso8601
+import netaddr
 from oslo_utils import strutils
 from oslo_utils import timeutils
 import six
 
-from oslo_versionedobjects._i18n import _
+from oslo_versionedobjects._i18n import _, _LE
 from oslo_versionedobjects import _utils
 from oslo_versionedobjects import exception
 
@@ -253,6 +254,16 @@ class String(FieldType):
         return '\'%s\'' % value
 
 
+class SensitiveString(String):
+    """A string field type that may contain sensitive (password) information.
+
+    Passwords in the string value are masked when stringified.
+    """
+    def stringify(self, value):
+        return super(SensitiveString, self).stringify(
+            strutils.mask_password(value))
+
+
 class VersionPredicate(String):
     @staticmethod
     def coerce(obj, attr, value):
@@ -298,6 +309,19 @@ class UUID(FieldType):
         return str(value)
 
 
+class MACAddress(FieldType):
+
+    _REGEX = re.compile(r'[0-9a-f]{2}(:[0-9a-f]{2}){5}$')
+
+    @staticmethod
+    def coerce(obj, attr, value):
+        lowered = value.lower().replace('-', ':')
+        if (not isinstance(value, six.string_types) or
+                not MACAddress._REGEX.match(lowered)):
+            raise ValueError(_LE("Malformed MAC %s"), value)
+        return lowered
+
+
 class Integer(FieldType):
     @staticmethod
     def coerce(obj, attr, value):
@@ -333,7 +357,7 @@ class DateTime(FieldType):
             value = timeutils.parse_isotime(value)
         elif not isinstance(value, datetime.datetime):
             raise ValueError(_('A datetime.datetime is required '
-                               'in field %(attr)s, not a %(type)') %
+                               'in field %(attr)s, not a %(type)s') %
                              {'attr': attr, 'type': type(value).__name__})
 
         if value.utcoffset() is None and self.tzinfo_aware:
@@ -355,6 +379,71 @@ class DateTime(FieldType):
     @staticmethod
     def stringify(value):
         return _utils.isotime(value)
+
+
+class IPAddress(FieldType):
+    @staticmethod
+    def coerce(obj, attr, value):
+        try:
+            return netaddr.IPAddress(value)
+        except netaddr.AddrFormatError as e:
+            raise ValueError(six.text_type(e))
+
+    def from_primitive(self, obj, attr, value):
+        return self.coerce(obj, attr, value)
+
+    @staticmethod
+    def to_primitive(obj, attr, value):
+        return str(value)
+
+
+class IPV4Address(IPAddress):
+    @staticmethod
+    def coerce(obj, attr, value):
+        result = IPAddress.coerce(obj, attr, value)
+        if result.version != 4:
+            raise ValueError(_('Network "%(val)s" is not valid '
+                               'in field %(attr)s') %
+                             {'val': value, 'attr': attr})
+        return result
+
+
+class IPV6Address(IPAddress):
+    @staticmethod
+    def coerce(obj, attr, value):
+        result = IPAddress.coerce(obj, attr, value)
+        if result.version != 6:
+            raise ValueError(_('Network "%(val)s" is not valid '
+                               'in field %(attr)s') %
+                             {'val': value, 'attr': attr})
+        return result
+
+
+class IPNetwork(IPAddress):
+    @staticmethod
+    def coerce(obj, attr, value):
+        try:
+            return netaddr.IPNetwork(value)
+        except netaddr.AddrFormatError as e:
+            raise ValueError(six.text_type(e))
+
+
+class IPV4Network(IPNetwork):
+    @staticmethod
+    def coerce(obj, attr, value):
+        try:
+            return netaddr.IPNetwork(value, version=4)
+        except netaddr.AddrFormatError as e:
+            raise ValueError(six.text_type(e))
+
+
+class IPV6Network(IPNetwork):
+    @staticmethod
+    def coerce(obj, attr, value):
+        try:
+            return netaddr.IPNetwork(value, version=6)
+        except netaddr.AddrFormatError as e:
+            raise ValueError(six.text_type(e))
 
 
 class CompoundFieldType(FieldType):
@@ -547,6 +636,11 @@ class StringField(AutoTypedField):
     AUTO_TYPE = String()
 
 
+class SensitiveStringField(AutoTypedField):
+    """Field type that masks passwords when the field is stringified."""
+    AUTO_TYPE = SensitiveString()
+
+
 class VersionPredicateField(AutoTypedField):
     AUTO_TYPE = VersionPredicate()
 
@@ -600,6 +694,10 @@ class EnumField(BaseEnumField):
 
 class UUIDField(AutoTypedField):
     AUTO_TYPE = UUID()
+
+
+class MACAddressField(AutoTypedField):
+    AUTO_TYPE = MACAddress()
 
 
 class IntegerField(AutoTypedField):
@@ -692,6 +790,30 @@ class ListOfObjectsField(AutoTypedField):
         self.AUTO_TYPE = List(Object(objtype, subclasses))
         self.objname = objtype
         super(ListOfObjectsField, self).__init__(**kwargs)
+
+
+class IPAddressField(AutoTypedField):
+    AUTO_TYPE = IPAddress()
+
+
+class IPV4AddressField(AutoTypedField):
+    AUTO_TYPE = IPV4Address()
+
+
+class IPV6AddressField(AutoTypedField):
+    AUTO_TYPE = IPV6Address()
+
+
+class IPNetworkField(AutoTypedField):
+    AUTO_TYPE = IPNetwork()
+
+
+class IPV4NetworkField(AutoTypedField):
+    AUTO_TYPE = IPV4Network()
+
+
+class IPV6NetworkField(AutoTypedField):
+    AUTO_TYPE = IPV6Network()
 
 
 class CoercedCollectionMixin(object):

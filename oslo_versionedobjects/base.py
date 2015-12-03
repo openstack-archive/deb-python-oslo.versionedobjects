@@ -18,8 +18,10 @@ import abc
 import collections
 import copy
 import logging
+import warnings
 
 import oslo_messaging as messaging
+from oslo_utils import encodeutils
 from oslo_utils import excutils
 import six
 
@@ -164,9 +166,16 @@ def remotable_classmethod(fn):
     @six.wraps(fn)
     def wrapper(cls, context, *args, **kwargs):
         if cls.indirection_api:
-            result = cls.indirection_api.object_class_action(
-                context, cls.obj_name(), fn.__name__, cls.VERSION,
-                args, kwargs)
+            version_manifest = obj_tree_get_versions(cls.obj_name())
+            try:
+                result = cls.indirection_api.object_class_action_versions(
+                    context, cls.obj_name(), fn.__name__, version_manifest,
+                    args, kwargs)
+            except NotImplementedError:
+                # FIXME(danms): Maybe start to warn here about deprecation?
+                result = cls.indirection_api.object_class_action(
+                    context, cls.obj_name(), fn.__name__, cls.VERSION,
+                    args, kwargs)
         else:
             result = fn(cls, context, *args, **kwargs)
             if isinstance(result, VersionedObject):
@@ -294,13 +303,22 @@ class VersionedObject(object):
             setattr(self, key, kwargs[key])
 
     def __repr__(self):
-        return '%s(%s)' % (
+        repr_str = '%s(%s)' % (
             self.obj_name(),
             ','.join(['%s=%s' % (name,
                                  (self.obj_attr_is_set(name) and
                                   field.stringify(getattr(self, name)) or
                                   '<?>'))
                       for name, field in sorted(self.fields.items())]))
+        if not six.PY3:
+            repr_str = encodeutils.safe_encode(repr_str, incoming='utf-8')
+        return repr_str
+
+    def __contains__(self, name):
+        try:
+            return self.obj_attr_is_set(name)
+        except AttributeError:
+            return False
 
     @classmethod
     def obj_name(cls):
@@ -517,7 +535,13 @@ class VersionedObject(object):
             if self.obj_attr_is_set(name):
                 primitive[name] = field.to_primitive(self, name,
                                                      getattr(self, name))
-        if target_version != self.VERSION:
+        # NOTE(danms): If we know we're being asked for a different version,
+        # then do the compat step. However, even if we think we're not,
+        # we may have sub-objects that need it, so if we have a manifest we
+        # have to traverse this object just in case. Previously, we
+        # required a parent version bump for any child, so the target
+        # check was enough.
+        if target_version != self.VERSION or version_manifest:
             self.obj_make_compatible_from_manifest(primitive,
                                                    target_version,
                                                    version_manifest)
@@ -701,12 +725,6 @@ class VersionedObjectDictCompat(object):
     def __setitem__(self, name, value):
         setattr(self, name, value)
 
-    def __contains__(self, name):
-        try:
-            return self.obj_attr_is_set(name)
-        except AttributeError:
-            return False
-
     def get(self, key, value=_NotSpecifiedSentinel):
         if key not in self.obj_fields:
             raise AttributeError("'%s' object has no attribute '%s'" % (
@@ -767,15 +785,20 @@ class ObjectListBase(collections.Sequence):
         # obj_relationships
         if self.child_versions:
             relationships = self.child_versions.items()
-        elif self.obj_relationships:
-            relationships = self._obj_relationship_for('objects',
-                                                       target_version)
+        else:
+            try:
+                relationships = self._obj_relationship_for('objects',
+                                                           target_version)
+            except exception.ObjectActionError:
+                # No relationship for this found in manifest or
+                # in obj_relationships
+                relationships = {}
 
         try:
-            # NOTE(rlrossit): If child_versions and obj_relationships weren't
-            # set, just backport to child version 1.0 (maintaining default
+            # NOTE(rlrossit): If we have no version information, just
+            # backport to child version 1.0 (maintaining default
             # behavior)
-            if self.child_versions or self.obj_relationships:
+            if relationships:
                 _get_subobject_version(target_version, relationships,
                                        lambda ver: _do_subobject_backport(
                                            ver, self, 'objects', primitive))
@@ -903,7 +926,11 @@ class VersionedObjectIndirectionAPI(object):
 
     def object_class_action(self, context, objname, objmethod, objver,
                             args, kwargs):
-        """Perform an action on a VersionedObject class.
+        """.. deprecated:: 0.10.0
+
+        Use :func:`object_class_action_versions` instead.
+
+        Perform an action on a VersionedObject class.
 
         When indirection_api is set on a VersionedObject (to a class
         implementing this interface), classmethod calls on
@@ -923,8 +950,47 @@ class VersionedObjectIndirectionAPI(object):
         """
         pass
 
+    def object_class_action_versions(self, context, objname, objmethod,
+                                     object_versions, args, kwargs):
+        """Perform an action on a VersionedObject class.
+
+        When indirection_api is set on a VersionedObject (to a class
+        implementing this interface), classmethod calls on
+        remotable_classmethod methods will cause this to be executed to
+        actually make the desired call. This usually involves performing
+        RPC.
+
+        This differs from object_class_action() in that it is provided
+        with object_versions, a manifest of client-side object versions
+        for easier nested backports. The manifest is the result of
+        calling obj_tree_get_versions().
+
+        NOTE: This was not in the initial spec for this interface, so the
+        base class raises NotImplementedError if you don't implement it.
+        For backports, this method will be tried first, and if unimplemented,
+        will fall back to object_class_action(). New implementations should
+        provide this method instead of object_class_action()
+
+        :param context: The context within which to perform the action
+        :param objname: The registry name of the object
+        :param objmethod: The name of the action method to call
+        :param object_versions: A dict of {objname: version} mappings
+        :param args: The positional arguments to the action method
+        :param kwargs: The keyword arguments to the action method
+        :returns: The result of the action method, which may (or may not)
+                  be an instance of the implementing VersionedObject class.
+        """
+        warnings.warn('object_class_action() is deprecated in favor of '
+                      'object_class_action_versions() and will be removed '
+                      'in a later release', DeprecationWarning)
+        raise NotImplementedError('Multi-version class action not supported')
+
     def object_backport(self, context, objinst, target_version):
-        """Perform a backport of an object instance to a specified version.
+        """.. deprecated:: 0.10.0
+
+        Use :func:`object_backport_versions` instead.
+
+        Perform a backport of an object instance to a specified version.
 
         When indirection_api is set on a VersionedObject (to a class
         implementing this interface), the default behavior of the base
@@ -969,6 +1035,9 @@ class VersionedObjectIndirectionAPI(object):
         :param objinst: An instance of a VersionedObject to be backported
         :param object_versions: A dict of {objname: version} mappings
         """
+        warnings.warn('object_backport() is deprecated in favor of '
+                      'object_backport_versions() and will be removed '
+                      'in a later release', DeprecationWarning)
         raise NotImplementedError('Multi-version backport not supported')
 
 
@@ -1000,14 +1069,14 @@ def obj_tree_get_versions(objname, tree=None):
 
     This method builds a list of dependent object versions given a top-
     level object with other objects as fields. It walks the tree recursively
-    to deterine all the objects (by symbolic name) that could be contained
+    to determine all the objects (by symbolic name) that could be contained
     within the top-level object, and the maximum versions of each. The result
     is a dict like:
 
       {'MyObject': '1.23', ... }
 
-    :param:objname: The top-level object at which to start
-    :param:tree: Used internally, pass None here.
+    :param objname: The top-level object at which to start
+    :param tree: Used internally, pass None here.
     :returns: A dictionary of object names and versions
     """
     if tree is None:

@@ -15,11 +15,13 @@
 import copy
 import datetime
 import logging
+import pytz
 import six
 
 import mock
 from oslo_context import context
 from oslo_serialization import jsonutils
+from oslo_utils import timeutils
 from testtools import matchers
 
 from oslo_versionedobjects import base
@@ -57,6 +59,7 @@ class MyObj(base.VersionedObject, base.VersionedObjectDictCompat):
               'rel_objects': fields.ListOfObjectsField('MyOwnedObject',
                                                        nullable=True),
               'mutable_default': fields.ListOfStringsField(default=[]),
+              'timestamp': fields.DateTimeField(nullable=True),
               }
 
     @staticmethod
@@ -135,6 +138,18 @@ class MyObj2(base.VersionedObject):
     @classmethod
     def obj_name(cls):
         return 'MyObj'
+
+    @base.remotable_classmethod
+    def query(cls, *args, **kwargs):
+        pass
+
+
+@base.VersionedObjectRegistry.register_if(False)
+class MySensitiveObj(base.VersionedObject):
+    VERSION = '1.0'
+    fields = {
+        'data': fields.SensitiveStringField(nullable=True)
+    }
 
     @base.remotable_classmethod
     def query(cls, *args, **kwargs):
@@ -388,6 +403,15 @@ class TestDoSubobjectBackport(test.TestCase):
                                                 version,
                                                 version_manifest=manifest)
 
+    def test_do_subobject_backport_with_manifest_old_parent(self):
+        child = self.ChildObj(foo=1)
+        parent = self.ParentObj(child=child)
+        manifest = {'ChildObj': '1.0'}
+        parent_primitive = parent.obj_to_primitive(target_version='1.1',
+                                                   version_manifest=manifest)
+        child_primitive = parent_primitive['versioned_object.data']['child']
+        self.assertEqual('1.0', child_primitive['versioned_object.version'])
+
     def test_do_subobject_backport_list_object(self):
         child = self.ChildObj(foo=1)
         parent = self.ParentObjList(objects=[child])
@@ -402,6 +426,16 @@ class TestDoSubobjectBackport(test.TestCase):
             mock_compat.assert_called_once_with(primitive,
                                                 version,
                                                 version_manifest=None)
+
+    def test_do_subobject_backport_list_object_with_manifest(self):
+        child = self.ChildObj(foo=1)
+        parent = self.ParentObjList(objects=[child])
+        manifest = {'ChildObj': '1.0', 'ParentObjList': '1.0'}
+        parent_primitive = parent.obj_to_primitive(target_version='1.0',
+                                                   version_manifest=manifest)
+        self.assertEqual('1.0', parent_primitive['versioned_object.version'])
+        child_primitive = parent_primitive['versioned_object.data']['objects']
+        self.assertEqual('1.0', child_primitive[0]['versioned_object.version'])
 
     def test_do_subobject_backport_null_child(self):
         parent = self.ParentObj(child=None)
@@ -529,15 +563,17 @@ class TestFixture(_BaseTestCase):
                                                 obj, 'marco',
                                                 (), {})
 
-    def test_indirection_class_action(self):
+    @mock.patch('oslo_versionedobjects.base.obj_tree_get_versions')
+    def test_indirection_class_action(self, mock_otgv):
+        mock_otgv.return_value = mock.sentinel.versions
         self.useFixture(fixture.IndirectionFixture())
         with mock.patch.object(base.VersionedObject.indirection_api,
-                               'object_class_action') as mock_caction:
+                               'object_class_action_versions') as mock_caction:
             mock_caction.return_value = 'foo'
             MyObj.query(self.context)
             mock_caction.assert_called_once_with(self.context,
                                                  'MyObj', 'query',
-                                                 MyObj.VERSION,
+                                                 mock.sentinel.versions,
                                                  (), {})
 
     def test_fake_indirection_serializes_arguments(self):
@@ -555,7 +591,7 @@ class TestFixture(_BaseTestCase):
         hashes = checker.get_hashes()
         # NOTE(danms): If this object's version or hash changes, this needs
         # to change. Otherwise, leave it alone.
-        self.assertEqual('1.6-7157ceb869f8f63fb9a955e6a7080ad7',
+        self.assertEqual('1.6-fb5f5379168bf08f7f2ce0a745e91027',
                          hashes['TestSubclassedObject'])
 
     def test_test_hashes(self):
@@ -951,10 +987,10 @@ class _TestObject(object):
         self.assertEqual(obj.bar, 'updated')
 
     def test_contains(self):
-        obj = MyObj()
-        self.assertNotIn('foo', obj)
-        obj.foo = 1
-        self.assertIn('foo', obj)
+        obj = MyOwnedObject()
+        self.assertNotIn('baz', obj)
+        obj.baz = 1
+        self.assertIn('baz', obj)
         self.assertNotIn('does_not_exist', obj)
 
     def test_obj_attr_is_set(self):
@@ -1001,7 +1037,7 @@ class _TestObject(object):
         base_fields = []
         myobj_fields = (['foo', 'bar', 'missing',
                          'readonly', 'rel_object',
-                         'rel_objects', 'mutable_default'] +
+                         'rel_objects', 'mutable_default', 'timestamp'] +
                         base_fields)
         myobj3_fields = ['new_field']
         self.assertTrue(issubclass(TestSubclassedObject, MyObj))
@@ -1034,6 +1070,25 @@ class _TestObject(object):
         self.assertEqual({'foo': 123}, obj.obj_get_changes())
         obj.bar = 'test'
         self.assertEqual({'foo': 123, 'bar': 'test'}, obj.obj_get_changes())
+        obj.obj_reset_changes()
+        self.assertEqual({}, obj.obj_get_changes())
+
+        timestamp = datetime.datetime(2001, 1, 1, tzinfo=pytz.utc)
+        with mock.patch.object(timeutils, 'utcnow') as mock_utcnow:
+            mock_utcnow.return_value = timestamp
+            obj.timestamp = timeutils.utcnow()
+            self.assertEqual({'timestamp': timestamp}, obj.obj_get_changes())
+
+        obj.obj_reset_changes()
+        self.assertEqual({}, obj.obj_get_changes())
+
+        # Timestamp without tzinfo causes mismatch
+        timestamp = datetime.datetime(2001, 1, 1)
+        with mock.patch.object(timeutils, 'utcnow') as mock_utcnow:
+            mock_utcnow.return_value = timestamp
+            obj.timestamp = timeutils.utcnow()
+            self.assertRaises(TypeError, obj.obj_get_changes())
+
         obj.obj_reset_changes()
         self.assertEqual({}, obj.obj_get_changes())
 
@@ -1089,8 +1144,16 @@ class _TestObject(object):
         obj = MyObj(foo=123)
         self.assertEqual('MyObj(bar=<?>,foo=123,missing=<?>,'
                          'mutable_default=<?>,readonly=<?>,'
-                         'rel_object=<?>,rel_objects=<?>)',
+                         'rel_object=<?>,rel_objects=<?>,timestamp=<?>)',
                          repr(obj))
+
+    def test_obj_repr_sensitive(self):
+        obj = MySensitiveObj(data="""{'admin_password':'mypassword'}""")
+        self.assertEqual(
+            'MySensitiveObj(data=\'{\'admin_password\':\'***\'}\')', repr(obj))
+
+        obj2 = MySensitiveObj()
+        self.assertEqual('MySensitiveObj(data=<?>)', repr(obj2))
 
     def test_obj_make_obj_compatible_with_relationships(self):
         subobj = MyOwnedObject(baz=1)
@@ -1494,30 +1557,42 @@ class TestObject(_LocalTest, _TestObject):
 
 
 class TestRemoteObject(_RemoteTest, _TestObject):
-    def test_major_version_mismatch(self):
-        MyObj2.VERSION = '2.0'
+    @mock.patch('oslo_versionedobjects.base.obj_tree_get_versions')
+    def test_major_version_mismatch(self, mock_otgv):
+        mock_otgv.return_value = {'MyObj': '2.0'}
         self.assertRaises(exception.IncompatibleObjectVersion,
                           MyObj2.query, self.context)
 
-    def test_minor_version_greater(self):
-        MyObj2.VERSION = '1.7'
+    @mock.patch('oslo_versionedobjects.base.obj_tree_get_versions')
+    def test_minor_version_greater(self, mock_otgv):
+        mock_otgv.return_value = {'MyObj': '1.7'}
         self.assertRaises(exception.IncompatibleObjectVersion,
                           MyObj2.query, self.context)
 
-    def test_minor_version_less(self):
-        MyObj2.VERSION = '1.2'
+    @mock.patch('oslo_versionedobjects.base.obj_tree_get_versions')
+    def test_minor_version_less(self, mock_otgv):
+        mock_otgv.return_value = {'MyObj': '1.2'}
         obj = MyObj2.query(self.context)
         self.assertEqual(obj.bar, 'bar')
 
-    def test_compat(self):
-        MyObj2.VERSION = '1.1'
+    @mock.patch('oslo_versionedobjects.base.obj_tree_get_versions')
+    def test_compat(self, mock_otgv):
+        mock_otgv.return_value = {'MyObj': '1.1'}
         obj = MyObj2.query(self.context)
         self.assertEqual('oldbar', obj.bar)
 
-    def test_revision_ignored(self):
-        MyObj2.VERSION = '1.1.456'
+    @mock.patch('oslo_versionedobjects.base.obj_tree_get_versions')
+    def test_revision_ignored(self, mock_otgv):
+        mock_otgv.return_value = {'MyObj': '1.1.456'}
         obj = MyObj2.query(self.context)
         self.assertEqual('bar', obj.bar)
+
+    def test_class_action_falls_back_compat(self):
+        with mock.patch.object(base.VersionedObject, 'indirection_api') as ma:
+            ma.object_class_action_versions.side_effect = NotImplementedError
+            MyObj.query(self.context)
+            ma.object_class_action.assert_called_once_with(
+                self.context, 'MyObj', 'query', MyObj.VERSION, (), {})
 
 
 class TestObjectListBase(test.TestCase):
