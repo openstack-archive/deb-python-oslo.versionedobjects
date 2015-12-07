@@ -1,7 +1,13 @@
-python-oslo.versionedobjects (1.0.0-1) unstable; urgency=medium
+python-oslo.versionedobjects (1.0.0-1) experimental; urgency=medium
 
   * Uploading to unstable.
   * Fixed (build-)depends for this release.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 07 Dec 2015 16:40:34 +0000
+
+python-oslo.versionedobjects (0.10.0-2) unstable; urgency=medium
+
+  * Uploading to unstable.
 
  -- Thomas Goirand <zigo@debian.org>  Thu, 15 Oct 2015 20:51:34 +0000
 
