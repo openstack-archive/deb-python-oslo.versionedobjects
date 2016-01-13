@@ -500,7 +500,6 @@ def compare_obj(test, obj, db_obj, subs=None, allow_missing=None,
 class _BaseTestCase(test.TestCase):
     def setUp(self):
         super(_BaseTestCase, self).setUp()
-        self.remote_object_calls = list()
         self.user_id = 'fake-user'
         self.project_id = 'fake-project'
         self.context = context.RequestContext(self.user_id, self.project_id)
@@ -640,10 +639,10 @@ class TestFixture(_BaseTestCase):
         def test(mock_compat):
             checker.test_compatibility_routines()
             mock_compat.assert_has_calls(
-                [mock.call(mock.sentinel.impl_one_one),
-                 mock.call(mock.sentinel.impl_one_two),
-                 mock.call(mock.sentinel.impl_two_one),
-                 mock.call(mock.sentinel.impl_two_two)],
+                [mock.call(mock.sentinel.impl_one_one, manifest=None),
+                 mock.call(mock.sentinel.impl_one_two, manifest=None),
+                 mock.call(mock.sentinel.impl_two_one, manifest=None),
+                 mock.call(mock.sentinel.impl_two_two, manifest=None)],
                 any_order=True)
         test()
 

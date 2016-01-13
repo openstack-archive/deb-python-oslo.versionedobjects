@@ -25,10 +25,10 @@ import hashlib
 import inspect
 import logging
 import mock
+from oslo_utils import versionutils as vutils
 import six
 
 import fixtures
-from oslo_versionedobjects import _utils as utils
 from oslo_versionedobjects import base
 from oslo_versionedobjects import fields
 
@@ -154,7 +154,7 @@ class ObjectVersionChecker(object):
             # This means the top-level thing never hit a remotable layer
             return None
 
-    def _get_fingerprint(self, obj_name):
+    def _get_fingerprint(self, obj_name, extra_data_func=None):
         obj_class = self.obj_classes[obj_name][0]
         obj_fields = list(obj_class.fields.items())
         obj_fields.sort()
@@ -178,16 +178,27 @@ class ObjectVersionChecker(object):
                                  sorted(obj_class.child_versions.items())))
         else:
             relevant_data = (obj_fields, methods)
+
+        if extra_data_func:
+            relevant_data += extra_data_func(obj_class)
+
         fingerprint = '%s-%s' % (obj_class.VERSION, hashlib.md5(
             six.binary_type(repr(relevant_data).encode())).hexdigest())
         return fingerprint
 
-    def get_hashes(self):
-        """Return a dict of computed object hashes."""
+    def get_hashes(self, extra_data_func=None):
+        """Return a dict of computed object hashes.
+
+        :param extra_data_func: a function that is given the object class
+                                which gathers more relevant data about the
+                                class that is needed in versioning. Returns
+                                a tuple containing the extra data bits.
+        """
 
         fingerprints = {}
         for obj_name in sorted(self.obj_classes):
-            fingerprints[obj_name] = self._get_fingerprint(obj_name)
+            fingerprints[obj_name] = self._get_fingerprint(
+                obj_name, extra_data_func=extra_data_func)
         return fingerprints
 
     def test_hashes(self, expected_hashes):
@@ -237,15 +248,17 @@ class ObjectVersionChecker(object):
 
         return expected, actual
 
-    def _test_object_compatibility(self, obj_class):
-        version = utils.convert_version_to_tuple(obj_class.VERSION)
+    def _test_object_compatibility(self, obj_class, manifest=None):
+        version = vutils.convert_version_to_tuple(obj_class.VERSION)
+        kwargs = {'version_manifest': manifest} if manifest else {}
         for n in range(version[1] + 1):
             test_version = '%d.%d' % (version[0], n)
             LOG.info('testing obj: %s version: %s' %
                      (obj_class.obj_name(), test_version))
-            obj_class().obj_to_primitive(target_version=test_version)
+            kwargs['target_version'] = test_version
+            obj_class().obj_to_primitive(**kwargs)
 
-    def test_compatibility_routines(self):
+    def test_compatibility_routines(self, use_manifest=False):
         # Iterate all object classes and verify that we can run
         # obj_make_compatible with every older version than current.
         # This doesn't actually test the data conversions, but it at least
@@ -253,16 +266,21 @@ class ObjectVersionChecker(object):
         # expecting the wrong version format.
         for obj_name in self.obj_classes:
             obj_classes = self.obj_classes[obj_name]
+            if use_manifest:
+                manifest = base.obj_tree_get_versions(obj_name)
+            else:
+                manifest = None
+
             for obj_class in obj_classes:
-                self._test_object_compatibility(obj_class)
+                self._test_object_compatibility(obj_class, manifest=manifest)
 
     def _test_relationships_in_order(self, obj_class):
         for field, versions in obj_class.obj_relationships.items():
             last_my_version = (0, 0)
             last_child_version = (0, 0)
             for my_version, child_version in versions:
-                _my_version = utils.convert_version_to_tuple(my_version)
-                _ch_version = utils.convert_version_to_tuple(child_version)
+                _my_version = vutils.convert_version_to_tuple(my_version)
+                _ch_version = vutils.convert_version_to_tuple(child_version)
                 assert (last_my_version < _my_version
                         and last_child_version <= _ch_version), \
                     ('Object %s relationship '
