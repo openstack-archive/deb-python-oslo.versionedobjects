@@ -315,11 +315,11 @@ class MACAddress(FieldType):
 
     @staticmethod
     def coerce(obj, attr, value):
-        lowered = value.lower().replace('-', ':')
-        if (not isinstance(value, six.string_types) or
-                not MACAddress._REGEX.match(lowered)):
-            raise ValueError(_LE("Malformed MAC %s"), value)
-        return lowered
+        if isinstance(value, six.string_types):
+            lowered = value.lower().replace('-', ':')
+            if MACAddress._REGEX.match(lowered):
+                return lowered
+        raise ValueError(_LE("Malformed MAC %s"), value)
 
 
 class Integer(FieldType):
@@ -520,7 +520,7 @@ class DictProxyField(object):
         self._fld_name = dict_field_name
         self._key_type = key_type
 
-    def __get__(self, obj, obj_type=None):
+    def __get__(self, obj, obj_type):
         if obj is None:
             return self
         if getattr(obj, self._fld_name) is None:
