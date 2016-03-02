@@ -5,6 +5,7 @@ python-oslo.versionedobjects (1.7.0-1) UNRELEASED; urgency=medium
 
   [ Corey Bryant ]
   * New upstream release.
+  * d/control: Align (Build-)Depends with upstream.
 
  -- Corey Bryant <corey.bryant@canonical.com>  Wed, 02 Mar 2016 15:41:51 -0500
 
