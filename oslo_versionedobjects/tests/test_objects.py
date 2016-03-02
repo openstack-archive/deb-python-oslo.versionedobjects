@@ -289,21 +289,40 @@ class TestRegistry(test.TestCase):
             mock_hook.assert_called_once_with(TestObjectNewer, 0)
 
     def test_subclassability(self):
-        class MyRegistry(base.VersionedObjectRegistry):
-            pass
+        class MyRegistryOne(base.VersionedObjectRegistry):
 
-        @MyRegistry.register
-        class ObjectInSubclassedRegistry(object):
-            fields = {}
+            def registration_hook(self, cls, index):
+                cls.reg_to = "one"
 
-            @classmethod
-            def obj_name(cls):
-                return cls.__name__
+        class MyRegistryTwo(base.VersionedObjectRegistry):
 
-        self.assertIn('ObjectInSubclassedRegistry',
-                      MyRegistry.obj_classes())
-        self.assertIn('ObjectInSubclassedRegistry',
+            def registration_hook(self, cls, index):
+                cls.reg_to = "two"
+
+        @MyRegistryOne.register
+        class AVersionedObject1(base.VersionedObject):
+            VERSION = '1.0'
+            fields = {'baz': fields.Field(fields.Integer())}
+
+        @MyRegistryTwo.register
+        class AVersionedObject2(base.VersionedObject):
+            VERSION = '1.0'
+            fields = {'baz': fields.Field(fields.Integer())}
+
+        self.assertIn('AVersionedObject1',
+                      MyRegistryOne.obj_classes())
+        self.assertIn('AVersionedObject2',
+                      MyRegistryOne.obj_classes())
+        self.assertIn('AVersionedObject1',
+                      MyRegistryTwo.obj_classes())
+        self.assertIn('AVersionedObject2',
+                      MyRegistryTwo.obj_classes())
+        self.assertIn('AVersionedObject1',
                       base.VersionedObjectRegistry.obj_classes())
+        self.assertIn('AVersionedObject2',
+                      base.VersionedObjectRegistry.obj_classes())
+        self.assertEqual(AVersionedObject1.reg_to, "one")
+        self.assertEqual(AVersionedObject2.reg_to, "two")
 
 
 class TestObjMakeList(test.TestCase):
@@ -459,55 +478,12 @@ class TestDoSubobjectBackport(test.TestCase):
             m.assert_called_once_with(mock.ANY, '1.0', mock.sentinel.manifest)
 
 
-def compare_obj(test, obj, db_obj, subs=None, allow_missing=None,
-                comparators=None):
-    """Compare a VersionedObject and a dict-like database object.
-
-    This automatically converts TZ-aware datetimes and iterates over
-    the fields of the object.
-
-    :param:test: The TestCase doing the comparison
-    :param:obj: The VersionedObject to examine
-    :param:db_obj: The dict-like database object to use as reference
-    :param:subs: A dict of objkey=dbkey field substitutions
-    :param:allow_missing: A list of fields that may not be in db_obj
-    :param:comparators: Map of comparator functions to use for certain fields
-    """
-
-    if subs is None:
-        subs = {}
-    if allow_missing is None:
-        allow_missing = []
-    if comparators is None:
-        comparators = {}
-
-    for key in obj.fields:
-        if key in allow_missing and not obj.obj_attr_is_set(key):
-            continue
-        obj_val = getattr(obj, key)
-        db_key = subs.get(key, key)
-        db_val = db_obj[db_key]
-        if isinstance(obj_val, datetime.datetime):
-            obj_val = obj_val.replace(tzinfo=None)
-
-        if key in comparators:
-            comparator = comparators[key]
-            comparator(db_val, obj_val)
-        else:
-            test.assertEqual(db_val, obj_val)
-
-
 class _BaseTestCase(test.TestCase):
     def setUp(self):
         super(_BaseTestCase, self).setUp()
         self.user_id = 'fake-user'
         self.project_id = 'fake-project'
         self.context = context.RequestContext(self.user_id, self.project_id)
-
-    def compare_obj(self, obj, db_obj, subs=None, allow_missing=None,
-                    comparators=None):
-        compare_obj(self, obj, db_obj, subs=subs, allow_missing=allow_missing,
-                    comparators=comparators)
 
     def json_comparator(self, expected, obj_val):
         # json-ify an object field for comparison with its db str
@@ -639,10 +615,14 @@ class TestFixture(_BaseTestCase):
         def test(mock_compat):
             checker.test_compatibility_routines()
             mock_compat.assert_has_calls(
-                [mock.call(mock.sentinel.impl_one_one, manifest=None),
-                 mock.call(mock.sentinel.impl_one_two, manifest=None),
-                 mock.call(mock.sentinel.impl_two_one, manifest=None),
-                 mock.call(mock.sentinel.impl_two_two, manifest=None)],
+                [mock.call(mock.sentinel.impl_one_one, manifest=None,
+                           init_args=[], init_kwargs={}),
+                 mock.call(mock.sentinel.impl_one_two, manifest=None,
+                           init_args=[], init_kwargs={}),
+                 mock.call(mock.sentinel.impl_two_one, manifest=None,
+                           init_args=[], init_kwargs={}),
+                 mock.call(mock.sentinel.impl_two_two, manifest=None,
+                           init_args=[], init_kwargs={})],
                 any_order=True)
         test()
 

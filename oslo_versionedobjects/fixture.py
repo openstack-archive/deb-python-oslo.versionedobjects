@@ -21,6 +21,8 @@
 """
 
 from collections import OrderedDict
+import copy
+import datetime
 import hashlib
 import inspect
 import logging
@@ -34,6 +36,55 @@ from oslo_versionedobjects import fields
 
 
 LOG = logging.getLogger(__name__)
+
+
+def compare_obj(test, obj, db_obj, subs=None, allow_missing=None,
+                comparators=None):
+    """Compare a VersionedObject and a dict-like database object.
+
+    This automatically converts TZ-aware datetimes and iterates over
+    the fields of the object.
+
+    :param test: The TestCase doing the comparison
+    :param obj: The VersionedObject to examine
+    :param db_obj: The dict-like database object to use as reference
+    :param subs: A dict of objkey=dbkey field substitutions
+    :param allow_missing: A list of fields that may not be in db_obj
+    :param comparators: Map of comparator functions to use for certain fields
+    """
+
+    if subs is None:
+        subs = {}
+    if allow_missing is None:
+        allow_missing = []
+    if comparators is None:
+        comparators = {}
+
+    for key in obj.fields:
+        # We'll raise a NotImplementedError if we try to compare against
+        # against something that isn't set in the object, but is not
+        # in the allow_missing. This will replace that exception
+        # with an AssertionError (because that is a better way of saying
+        # "these objects arent the same").
+        if not obj.obj_attr_is_set(key):
+            if key in allow_missing:
+                continue
+            else:
+                raise AssertionError(("%s is not set on the object, so "
+                                      "the objects are not equal") % key)
+        if key in allow_missing and not obj.obj_attr_is_set(key):
+            continue
+        obj_val = getattr(obj, key)
+        db_key = subs.get(key, key)
+        db_val = db_obj[db_key]
+        if isinstance(obj_val, datetime.datetime):
+            obj_val = obj_val.replace(tzinfo=None)
+
+        if key in comparators:
+            comparator = comparators[key]
+            comparator(db_val, obj_val)
+        else:
+            test.assertEqual(db_val, obj_val)
 
 
 class FakeIndirectionAPI(base.VersionedObjectIndirectionAPI):
@@ -248,7 +299,10 @@ class ObjectVersionChecker(object):
 
         return expected, actual
 
-    def _test_object_compatibility(self, obj_class, manifest=None):
+    def _test_object_compatibility(self, obj_class, manifest=None,
+                                   init_args=None, init_kwargs=None):
+        init_args = init_args or []
+        init_kwargs = init_kwargs or {}
         version = vutils.convert_version_to_tuple(obj_class.VERSION)
         kwargs = {'version_manifest': manifest} if manifest else {}
         for n in range(version[1] + 1):
@@ -256,14 +310,31 @@ class ObjectVersionChecker(object):
             LOG.info('testing obj: %s version: %s' %
                      (obj_class.obj_name(), test_version))
             kwargs['target_version'] = test_version
-            obj_class().obj_to_primitive(**kwargs)
+            obj_class(*init_args, **init_kwargs).obj_to_primitive(**kwargs)
 
-    def test_compatibility_routines(self, use_manifest=False):
+    def test_compatibility_routines(self, use_manifest=False, init_args=None,
+                                    init_kwargs=None):
+        """Test obj_make_compatible() on all object classes.
+
+        :param use_manifest: a boolean that determines if the version
+                             manifest should be passed to obj_make_compatible
+        :param init_args: a dictionary of the format {obj_class: [arg1, arg2]}
+                          that will be used to pass arguments to init on the
+                          given obj_class. If no args are needed, the
+                          obj_class does not need to be added to the dict
+        :param init_kwargs: a dictionary of the format
+                            {obj_class: {'kwarg1': val1}} that will be used to
+                            pass kwargs to init on the given obj_class. If no
+                            kwargs are needed, the obj_class does not need to
+                            be added to the dict
+        """
         # Iterate all object classes and verify that we can run
         # obj_make_compatible with every older version than current.
         # This doesn't actually test the data conversions, but it at least
         # makes sure the method doesn't blow up on something basic like
         # expecting the wrong version format.
+        init_args = init_args or {}
+        init_kwargs = init_kwargs or {}
         for obj_name in self.obj_classes:
             obj_classes = self.obj_classes[obj_name]
             if use_manifest:
@@ -272,7 +343,11 @@ class ObjectVersionChecker(object):
                 manifest = None
 
             for obj_class in obj_classes:
-                self._test_object_compatibility(obj_class, manifest=manifest)
+                args_for_init = init_args.get(obj_class, [])
+                kwargs_for_init = init_kwargs.get(obj_class, {})
+                self._test_object_compatibility(obj_class, manifest=manifest,
+                                                init_args=args_for_init,
+                                                init_kwargs=kwargs_for_init)
 
     def _test_relationships_in_order(self, obj_class):
         for field, versions in obj_class.obj_relationships.items():
@@ -300,3 +375,27 @@ class ObjectVersionChecker(object):
             obj_classes = self.obj_classes[obj_name]
             for obj_class in obj_classes:
                 self._test_relationships_in_order(obj_class)
+
+
+class VersionedObjectRegistryFixture(fixtures.Fixture):
+    """Use a VersionedObjectRegistry as a temp registry pattern fixture.
+
+    The pattern solution is to backup the object registry, register
+    a class locally, and then restore the original registry. This could be
+    used for test objects that do not need to be registered permanently but
+    will have calls which lookup registration.
+    """
+
+    def setUp(self):
+        super(VersionedObjectRegistryFixture, self).setUp()
+        self._base_test_obj_backup = copy.deepcopy(
+            base.VersionedObjectRegistry._registry._obj_classes)
+        self.addCleanup(self._restore_obj_registry)
+
+    @staticmethod
+    def register(cls_name):
+        base.VersionedObjectRegistry.register(cls_name)
+
+    def _restore_obj_registry(self):
+        base.VersionedObjectRegistry._registry._obj_classes = \
+            self._base_test_obj_backup

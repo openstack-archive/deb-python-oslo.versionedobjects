@@ -101,18 +101,20 @@ class VersionedObjectRegistry(object):
 
     def __new__(cls, *args, **kwargs):
         if not VersionedObjectRegistry._registry:
-            VersionedObjectRegistry._registry = \
-                object.__new__(cls, *args, **kwargs)
+            VersionedObjectRegistry._registry = object.__new__(
+                VersionedObjectRegistry, *args, **kwargs)
             VersionedObjectRegistry._registry._obj_classes = \
                 collections.defaultdict(list)
-        return VersionedObjectRegistry._registry
+        self = object.__new__(cls, *args, **kwargs)
+        self._obj_classes = VersionedObjectRegistry._registry._obj_classes
+        return self
 
     def registration_hook(self, cls, index):
         pass
 
     def _register_class(self, cls):
         def _vers_tuple(obj):
-            return tuple([int(x) for x in obj.VERSION.split(".")])
+            return vutils.convert_version_to_tuple(obj.VERSION)
 
         _make_class_properties(cls)
         obj_name = cls.obj_name()

@@ -18,6 +18,7 @@ import iso8601
 import mock
 import netaddr
 import six
+import testtools
 
 from oslo_versionedobjects import _utils
 from oslo_versionedobjects import base as obj_base
@@ -63,6 +64,32 @@ class FakeEnumAlt(fields.Enum):
 
 class FakeEnumField(fields.BaseEnumField):
     AUTO_TYPE = FakeEnum()
+
+
+class FakeStateMachineField(fields.StateMachine):
+
+    ACTIVE = 'ACTIVE'
+    PENDING = 'PENDING'
+    ERROR = 'ERROR'
+
+    ALLOWED_TRANSITIONS = {
+        ACTIVE: {
+            PENDING,
+            ERROR
+        },
+        PENDING: {
+            ACTIVE,
+            ERROR
+        },
+        ERROR: {
+            PENDING,
+        },
+    }
+
+    _TYPES = (ACTIVE, PENDING, ERROR)
+
+    def __init__(self, **kwargs):
+        super(FakeStateMachineField, self).__init__(self._TYPES, **kwargs)
 
 
 class FakeEnumAltField(fields.BaseEnumField):
@@ -164,6 +191,43 @@ class TestMACAddress(TestField):
         self.from_primitive_values = self.coerce_good_values[0:1]
 
 
+class TestUUID(TestField):
+    def setUp(self):
+        super(TestUUID, self).setUp()
+
+    def test_validation_enabled(self):
+        self.field = fields.UUIDField()
+        self.coerce_good_values = [
+            ('da66a411-af0e-4829-9b67-475017ddd152',
+                'da66a411-af0e-4829-9b67-475017ddd152'),
+            ('da66a411af0e48299b67475017ddd152',
+                'da66a411af0e48299b67475017ddd152'),
+            ('DA66A411-AF0E-4829-9B67-475017DDD152',
+                'DA66A411-AF0E-4829-9B67-475017DDD152'),
+            ('DA66A411AF0E48299b67475017DDD152',
+                'DA66A411AF0E48299b67475017DDD152'),
+            # These values are included to ensure there is not change in
+            # behaviour - only when we can remove the old UUID behaviour can
+            #  we add these to the "self.coerce_bad_values" list
+            ('da66a411-af0e-4829-9b67',
+                'da66a411-af0e-4829-9b67'),
+            ('da66a411-af0e-4829-9b67-475017ddd152548999',
+                'da66a411-af0e-4829-9b67-475017ddd152548999'),
+            ('da66a411-af0e-4829-9b67-475017ddz152',
+                'da66a411-af0e-4829-9b67-475017ddz152'),
+            ('fake_uuid', 'fake_uuid'),
+            ('1', '1'),
+            (1, '1')
+        ]
+
+        self.to_primitive_values = self.coerce_good_values[0:1]
+        self.from_primitive_values = self.coerce_good_values[0:1]
+
+        self.test_coerce_good_values()
+        self.test_from_primitive()
+        self.test_to_primitive()
+
+
 class TestBaseEnum(TestField):
     def setUp(self):
         super(TestBaseEnum, self).setUp()
@@ -223,6 +287,71 @@ class TestEnum(TestField):
     def test_non_iterable_valid_values(self):
         self.assertRaises(exception.EnumValidValuesInvalidError,
                           fields.EnumField, True)
+
+
+class TestStateMachine(TestField):
+
+    def test_good_transitions(self):
+        @obj_base.VersionedObjectRegistry.register
+        class AnObject(obj_base.VersionedObject):
+            fields = {
+                'status': FakeStateMachineField(),
+            }
+
+        obj = AnObject()
+
+        obj.status = FakeStateMachineField.ACTIVE
+        obj.status = FakeStateMachineField.PENDING
+        obj.status = FakeStateMachineField.ERROR
+        obj.status = FakeStateMachineField.PENDING
+        obj.status = FakeStateMachineField.ACTIVE
+
+    def test_bad_transitions(self):
+        @obj_base.VersionedObjectRegistry.register
+        class AnObject(obj_base.VersionedObject):
+            fields = {
+                'status': FakeStateMachineField(),
+            }
+
+        obj = AnObject(status='ERROR')
+
+        try:
+            obj.status = FakeStateMachineField.ACTIVE
+        except ValueError as e:
+            ex = e
+        else:
+            ex = None
+
+        self.assertIsNotNone(ex, 'Invalid transition failed to raise error')
+        self.assertEqual('AnObject.status is not allowed to transition out '
+                         'of \'ERROR\' state to \'ACTIVE\' state, choose from '
+                         '[\'PENDING\']',
+                         str(ex))
+
+    def test_bad_initial_value(self):
+        @obj_base.VersionedObjectRegistry.register
+        class AnObject(obj_base.VersionedObject):
+            fields = {
+                'status': FakeStateMachineField(),
+            }
+
+        obj = AnObject()
+
+        with testtools.ExpectedException(ValueError):
+            obj.status = "FOO"
+
+    def test_bad_updated_value(self):
+        @obj_base.VersionedObjectRegistry.register
+        class AnObject(obj_base.VersionedObject):
+            fields = {
+                'status': FakeStateMachineField(),
+            }
+
+        obj = AnObject()
+
+        with testtools.ExpectedException(ValueError):
+            obj.status = FakeStateMachineField.ACTIVE
+            obj.status = "FOO"
 
 
 class TestInteger(TestField):

@@ -16,6 +16,8 @@ import abc
 import datetime
 from distutils import versionpredicate
 import re
+import uuid
+import warnings
 
 import copy
 import iso8601
@@ -306,7 +308,23 @@ class UUID(FieldType):
     @staticmethod
     def coerce(obj, attr, value):
         # FIXME(danms): We should actually verify the UUIDness here
-        return str(value)
+        with warnings.catch_warnings():
+            warnings.simplefilter("once")
+            try:
+                uuid.UUID(str(value))
+            except Exception:
+                # This is to ensure no breaking behaviour for current
+                # users
+                warnings.warn("%s is an invalid UUID. Using UUIDFields "
+                              "with invalid UUIDs is no longer "
+                              "supported, and will be removed in a future "
+                              "release. Please update your "
+                              "code to input valid UUIDs or accept "
+                              "ValueErrors for invalid UUIDs. See "
+                              "http://docs.openstack.org/developer/oslo.versionedobjects/api/fields.html#oslo_versionedobjects.fields.UUIDField "  # noqa
+                              "for further details" % value, FutureWarning)
+
+            return str(value)
 
 
 class MACAddress(FieldType):
@@ -691,7 +709,113 @@ class EnumField(BaseEnumField):
         super(EnumField, self).__init__(**kwargs)
 
 
+class StateMachine(EnumField):
+    """A mixin that can be applied to an EnumField to enforce a state machine
+
+    e.g: Setting the code below on a field will ensure an object cannot
+    transition from ERROR to ACTIVE
+
+
+    class FakeStateMachineField(fields.EnumField, fields.StateMachine):
+
+        ACTIVE = 'ACTIVE'
+        PENDING = 'PENDING'
+        ERROR = 'ERROR'
+        DELETED = 'DELETED'
+
+        ALLOWED_TRANSITIONS = {
+            ACTIVE: {
+                PENDING,
+                ERROR,
+                DELETED,
+            },
+            PENDING: {
+                ACTIVE,
+                ERROR
+            },
+            ERROR: {
+                PENDING,
+            },
+            DELETED: {}  # This is a terminal state
+        }
+
+        _TYPES = (ACTIVE, PENDING, ERROR, DELETED)
+
+        def __init__(self, **kwargs):
+            super(FakeStateMachineField, self).__init__(self._TYPES, **kwargs)
+
+    """
+    # This is dict of states, that have dicts of states an object is
+    # allowed to transition to
+
+    ALLOWED_TRANSITIONS = {}
+
+    def _my_name(self, obj):
+        for name, field in obj.fields.items():
+            if field == self:
+                return name
+        return 'unknown'
+
+    def coerce(self, obj, attr, value):
+        super(StateMachine, self).coerce(obj, attr, value)
+        my_name = self._my_name(obj)
+        msg = _("%(object)s.%(name)s is not allowed to transition out of "
+                "%(value)s state")
+
+        if attr in obj:
+            current_value = getattr(obj, attr)
+        else:
+            return value
+
+        if current_value in self.ALLOWED_TRANSITIONS:
+
+            if value in self.ALLOWED_TRANSITIONS[current_value]:
+                return value
+            else:
+                msg = _(
+                    "%(object)s.%(name)s is not allowed to transition out of "
+                    "'%(current_value)s' state to '%(value)s' state, choose "
+                    "from %(options)r")
+        msg = msg % {
+            'object': obj.obj_name(),
+            'name': my_name,
+            'current_value': current_value,
+            'value': value,
+            'options': [x for x in self.ALLOWED_TRANSITIONS[current_value]]
+        }
+        raise ValueError(msg)
+
+
 class UUIDField(AutoTypedField):
+    """UUID Field Type
+
+    .. warning::
+
+        This class does not actually validate UUIDs. This will happen in a
+        future major version of oslo.versionedobjects
+
+    To validate that you have valid UUIDs you need to do the following in
+    your own objects/fields.py
+
+    :Example:
+         .. code-block:: python
+
+            import oslo_versionedobjects.fields as ovo_fields
+
+            class UUID(ovo_fields.UUID):
+                 def coerce(self, obj, attr, value):
+                    uuid.UUID(value)
+                    return str(value)
+
+
+            class UUIDField(ovo_fields.AutoTypedField):
+                AUTO_TYPE = UUID()
+
+        and then in your objects use
+        ``<your_projects>.object.fields.UUIDField``.
+
+    This will become default behaviour in the future.
+    """
     AUTO_TYPE = UUID()
 
 

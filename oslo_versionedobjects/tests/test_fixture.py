@@ -14,12 +14,15 @@
 
 import collections
 import copy
+import datetime
 import hashlib
 
+import iso8601
 import mock
 import six
 
 from oslo_versionedobjects import base
+from oslo_versionedobjects import exception
 from oslo_versionedobjects import fields
 from oslo_versionedobjects import fixture
 from oslo_versionedobjects import test
@@ -51,6 +54,100 @@ class MyObject2(base.VersionedObject):
 
 class MyExtraObject(base.VersionedObject):
     pass
+
+
+class TestObjectComparators(test.TestCase):
+    @base.VersionedObjectRegistry.register_if(False)
+    class MyComparedObject(base.VersionedObject):
+        fields = {'foo': fields.IntegerField(),
+                  'bar': fields.IntegerField()}
+
+    @base.VersionedObjectRegistry.register_if(False)
+    class MyComparedObjectWithTZ(base.VersionedObject):
+        fields = {'tzfield': fields.DateTimeField()}
+
+    def test_compare_obj(self):
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        my_obj = self.MyComparedObject(foo=1, bar=2)
+        my_db_obj = {'foo': 1, 'bar': 2}
+
+        fixture.compare_obj(mock_test, my_obj, my_db_obj)
+
+        expected_calls = [(1, 1), (2, 2)]
+        actual_calls = [c[0] for c in mock_test.assertEqual.call_args_list]
+        for call in expected_calls:
+            self.assertIn(call, actual_calls)
+
+    def test_compare_obj_with_unset(self):
+        mock_test = mock.Mock()
+        my_obj = self.MyComparedObject()
+        my_db_obj = {}
+
+        self.assertRaises(AssertionError, fixture.compare_obj,
+                          mock_test, my_obj, my_db_obj)
+
+    def test_compare_obj_with_subs(self):
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        my_obj = self.MyComparedObject(foo=1, bar=2)
+        my_db_obj = {'doo': 1, 'bar': 2}
+        subs = {'foo': 'doo'}
+
+        fixture.compare_obj(mock_test, my_obj, my_db_obj, subs=subs)
+
+        expected_calls = [(1, 1), (2, 2)]
+        actual_calls = [c[0] for c in mock_test.assertEqual.call_args_list]
+        for call in expected_calls:
+            self.assertIn(call, actual_calls)
+
+    def test_compare_obj_with_allow_missing(self):
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        my_obj = self.MyComparedObject(foo=1)
+        my_db_obj = {'foo': 1, 'bar': 2}
+        ignores = ['bar']
+
+        fixture.compare_obj(mock_test, my_obj, my_db_obj,
+                            allow_missing=ignores)
+
+        mock_test.assertEqual.assert_called_once_with(1, 1)
+
+    def test_compare_obj_with_comparators(self):
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        comparator = mock.Mock()
+        comp_dict = {'foo': comparator}
+        my_obj = self.MyComparedObject(foo=1, bar=2)
+        my_db_obj = {'foo': 1, 'bar': 2}
+
+        fixture.compare_obj(mock_test, my_obj, my_db_obj,
+                            comparators=comp_dict)
+
+        comparator.assert_called_once_with(1, 1)
+        mock_test.assertEqual.assert_called_once_with(2, 2)
+
+    def test_compare_obj_with_dt(self):
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        dt = datetime.datetime(1955, 11, 5, tzinfo=iso8601.iso8601.Utc())
+        replaced_dt = dt.replace(tzinfo=None)
+        my_obj = self.MyComparedObjectWithTZ(tzfield=dt)
+        my_db_obj = {'tzfield': replaced_dt}
+
+        fixture.compare_obj(mock_test, my_obj, my_db_obj)
+
+        mock_test.assertEqual.assert_called_once_with(replaced_dt,
+                                                      replaced_dt)
+
+
+class FakeResource(base.VersionedObject):
+    # Version 1.0: Initial version
+    VERSION = '1.0'
+
+    fields = {
+        'identifier': fields.Field(fields.Integer(), default=123)
+    }
 
 
 class TestObjectVersionChecker(test.TestCase):
@@ -257,7 +354,8 @@ class TestObjectVersionChecker(test.TestCase):
         with mock.patch.object(self.ovc, '_test_object_compatibility') as toc:
             self.ovc.test_compatibility_routines()
 
-        toc.assert_called_once_with(MyObject, manifest=None)
+        toc.assert_called_once_with(MyObject, manifest=None, init_args=[],
+                                    init_kwargs={})
 
     def test_test_compatibility_routines_with_manifest(self):
         # Make sure test_compatibility_routines() uses the version manifest
@@ -271,7 +369,21 @@ class TestObjectVersionChecker(test.TestCase):
                 self.ovc.test_compatibility_routines(use_manifest=True)
 
         otgv.assert_called_once_with(MyObject.__name__)
-        toc.assert_called_once_with(MyObject, manifest=man)
+        toc.assert_called_once_with(MyObject, manifest=man, init_args=[],
+                                    init_kwargs={})
+
+    def test_test_compatibility_routines_with_args_kwargs(self):
+        # Make sure test_compatibility_routines() uses init args/kwargs
+        del self.ovc.obj_classes[MyObject2.__name__]
+        init_args = {MyObject: [1]}
+        init_kwargs = {MyObject: {'foo': 'bar'}}
+
+        with mock.patch.object(self.ovc, '_test_object_compatibility') as toc:
+            self.ovc.test_compatibility_routines(init_args=init_args,
+                                                 init_kwargs=init_kwargs)
+
+        toc.assert_called_once_with(MyObject, manifest=None, init_args=[1],
+                                    init_kwargs={'foo': 'bar'})
 
     def test_test_relationships_in_order(self):
         # Make sure test_relationships_in_order() tests the relationships
@@ -450,6 +562,32 @@ class TestObjectVersionChecker(test.TestCase):
                          "_test_object_compatibility() did not test "
                          "obj_to_primitive() on the correct target versions")
 
+    def test_test_object_compatibility_args_kwargs(self):
+        # Make sure _test_object_compatibility() tests obj_to_primitive()
+        # with the correct args and kwargs to init
+        to_prim = mock.MagicMock(spec=callable)
+        MyObject.obj_to_primitive = to_prim
+        MyObject.VERSION = '1.1'
+        args = [1]
+        kwargs = {'foo': 'bar'}
+
+        with mock.patch.object(MyObject, '__init__',
+                               return_value=None) as mock_init:
+            self.ovc._test_object_compatibility(MyObject, init_args=args,
+                                                init_kwargs=kwargs)
+
+        expected_init = ((1,), {'foo': 'bar'})
+        expected_init_calls = [expected_init, expected_init]
+        self.assertEqual(expected_init_calls, mock_init.call_args_list,
+                         "_test_object_compatibility() did not call "
+                         "__init__() properly on the object")
+
+        expected_to_prim = [((), {'target_version': '1.0'}),
+                            ((), {'target_version': '1.1'})]
+        self.assertEqual(expected_to_prim, to_prim.call_args_list,
+                         "_test_object_compatibility() did not test "
+                         "obj_to_primitive() on the correct target versions")
+
     def _add_class(self, obj_classes, cls):
         obj_classes[cls.__name__] = [cls]
 
@@ -464,3 +602,35 @@ class TestObjectVersionChecker(test.TestCase):
         deps = tree.get(parent_cls.__name__, {})
         deps[child_cls.__name__] = '1.0'
         tree[parent_cls.__name__] = deps
+
+
+class TestVersionedObjectRegistryFixture(test.TestCase):
+
+    primitive = {'versioned_object.name': 'FakeResource',
+                 'versioned_object.namespace': 'versionedobjects',
+                 'versioned_object.version': '1.0',
+                 'versioned_object.data': {'identifier': 123}}
+
+    def test_object_registered_temporarily(self):
+        # Test object that has not been registered
+        self.assertRaises(
+            exception.UnsupportedObjectError,
+            FakeResource.obj_from_primitive,
+            self.primitive)
+
+        with fixture.VersionedObjectRegistryFixture() as obj_registry:
+            # Register object locally
+            obj_registry.setUp()
+            obj_registry.register(FakeResource)
+
+            # Test object has now been registered
+            obj = FakeResource.obj_from_primitive(
+                self.primitive)
+            self.assertEqual(obj.identifier, 123)
+            self.assertEqual('1.0', obj.VERSION)
+
+        # Test object that is no longer registered
+        self.assertRaises(
+            exception.UnsupportedObjectError,
+            FakeResource.obj_from_primitive,
+            self.primitive)
