@@ -1,6 +1,7 @@
 python-oslo.versionedobjects (1.8.0-1) experimental; urgency=medium
 
   * New upstream release.
+  * Fixed version of python{3,}-oslo.config.
 
  -- Thomas Goirand <zigo@debian.org>  Sat, 02 Apr 2016 14:49:13 +0200
 
