@@ -291,6 +291,10 @@ class Enum(String):
         self._valid_values = valid_values
         super(Enum, self).__init__(**kwargs)
 
+    @property
+    def valid_values(self):
+        return copy.copy(self._valid_values)
+
     def coerce(self, obj, attr, value):
         if value not in self._valid_values:
             msg = _("Field value %s is invalid") % value
@@ -606,6 +610,10 @@ class Object(FieldType):
             obj_names = [obj_name]
 
         if self._obj_name not in obj_names:
+            if not obj_name:
+                # If we're not dealing with an object, it's probably a
+                # primitive so get it's type for the message below.
+                obj_name = type(value).__name__
             raise ValueError(_('An object of type %(type)s is required '
                                'in field %(attr)s, not a %(valtype)s') %
                              {'type': self._obj_name, 'attr': attr,
@@ -683,7 +691,7 @@ class BaseEnumField(AutoTypedField):
         super(BaseEnumField, self).__init__(**kwargs)
 
     def __repr__(self):
-        valid_values = self._type._valid_values
+        valid_values = self._type.valid_values
         args = {
             'nullable': self._nullable,
             'default': self._default,
@@ -692,6 +700,11 @@ class BaseEnumField(AutoTypedField):
         return '%s(%s)' % (self._type.__class__.__name__,
                            ','.join(['%s=%s' % (k, v)
                                      for k, v in sorted(args.items())]))
+
+    @property
+    def valid_values(self):
+        """Return the list of valid values for the field."""
+        return self._type.valid_values
 
 
 class EnumField(BaseEnumField):
@@ -715,34 +728,37 @@ class StateMachine(EnumField):
     e.g: Setting the code below on a field will ensure an object cannot
     transition from ERROR to ACTIVE
 
+    :example:
+        .. code-block:: python
 
-    class FakeStateMachineField(fields.EnumField, fields.StateMachine):
+            class FakeStateMachineField(fields.EnumField, fields.StateMachine):
 
-        ACTIVE = 'ACTIVE'
-        PENDING = 'PENDING'
-        ERROR = 'ERROR'
-        DELETED = 'DELETED'
+                ACTIVE = 'ACTIVE'
+                PENDING = 'PENDING'
+                ERROR = 'ERROR'
+                DELETED = 'DELETED'
 
-        ALLOWED_TRANSITIONS = {
-            ACTIVE: {
-                PENDING,
-                ERROR,
-                DELETED,
-            },
-            PENDING: {
-                ACTIVE,
-                ERROR
-            },
-            ERROR: {
-                PENDING,
-            },
-            DELETED: {}  # This is a terminal state
-        }
+                ALLOWED_TRANSITIONS = {
+                    ACTIVE: {
+                        PENDING,
+                        ERROR,
+                        DELETED,
+                    },
+                    PENDING: {
+                        ACTIVE,
+                        ERROR
+                    },
+                    ERROR: {
+                        PENDING,
+                    },
+                    DELETED: {}  # This is a terminal state
+                }
 
-        _TYPES = (ACTIVE, PENDING, ERROR, DELETED)
+                _TYPES = (ACTIVE, PENDING, ERROR, DELETED)
 
-        def __init__(self, **kwargs):
-            super(FakeStateMachineField, self).__init__(self._TYPES, **kwargs)
+                def __init__(self, **kwargs):
+                    super(FakeStateMachineField, self).__init__(
+                    self._TYPES, **kwargs)
 
     """
     # This is dict of states, that have dicts of states an object is
@@ -878,7 +894,7 @@ class ListOfEnumField(AutoTypedField):
         super(ListOfEnumField, self).__init__(**kwargs)
 
     def __repr__(self):
-        valid_values = self._type._element_type._type._valid_values
+        valid_values = self._type._element_type._type.valid_values
         args = {
             'nullable': self._nullable,
             'default': self._default,
