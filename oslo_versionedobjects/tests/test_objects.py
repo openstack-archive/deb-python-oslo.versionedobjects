@@ -324,6 +324,47 @@ class TestRegistry(test.TestCase):
         self.assertEqual(AVersionedObject1.reg_to, "one")
         self.assertEqual(AVersionedObject2.reg_to, "two")
 
+    @mock.patch.object(base.VersionedObjectRegistry, '__new__')
+    def test_register(self, mock_registry):
+        mock_reg_obj = mock.Mock()
+        mock_registry.return_value = mock_reg_obj
+        mock_reg_obj._register_class = mock.Mock()
+
+        class my_class(object):
+            pass
+
+        base.VersionedObjectRegistry.register(my_class)
+        mock_reg_obj._register_class.assert_called_once_with(my_class)
+
+    @mock.patch.object(base.VersionedObjectRegistry, 'register')
+    def test_register_if(self, mock_register):
+        class my_class(object):
+            pass
+
+        base.VersionedObjectRegistry.register_if(True)(my_class)
+        mock_register.assert_called_once_with(my_class)
+
+    @mock.patch.object(base, '_make_class_properties')
+    def test_register_if_false(self, mock_make_props):
+        class my_class(object):
+            pass
+
+        base.VersionedObjectRegistry.register_if(False)(my_class)
+        mock_make_props.assert_called_once_with(my_class)
+
+    @mock.patch.object(base.VersionedObjectRegistry, 'register_if')
+    def test_objectify(self, mock_register_if):
+        mock_reg_callable = mock.Mock()
+        mock_register_if.return_value = mock_reg_callable
+
+        class my_class(object):
+            pass
+
+        base.VersionedObjectRegistry.objectify(my_class)
+
+        mock_register_if.assert_called_once_with(False)
+        mock_reg_callable.assert_called_once_with(my_class)
+
 
 class TestObjMakeList(test.TestCase):
 
@@ -1322,11 +1363,17 @@ class _TestObject(object):
                                                 version_manifest=None)
 
     def test_comparable_objects(self):
+        class NonVersionedObject(object):
+            pass
+
         obj1 = MyComparableObj(foo=1)
         obj2 = MyComparableObj(foo=1)
         obj3 = MyComparableObj(foo=2)
+        obj4 = NonVersionedObject()
         self.assertTrue(obj1 == obj2)
         self.assertFalse(obj1 == obj3)
+        self.assertFalse(obj1 == obj4)
+        self.assertNotEqual(obj1, None)
 
     def test_compound_clone(self):
         obj = MyCompoundObject()
@@ -1992,6 +2039,67 @@ class TestObjectSerializer(_BaseTestCase):
         ser.deserialize_entity(mock.sentinel.context, prim)
         indirection_api.object_backport.assert_called_once_with(
             mock.sentinel.context, prim, '1.0')
+
+
+class TestSchemaGeneration(test.TestCase):
+    class FakeFieldType(fields.FieldType):
+        pass
+
+    def setUp(self):
+        super(TestSchemaGeneration, self).setUp()
+
+        self.nonNullableField = fields.Field(self.FakeFieldType)
+        self.nullableField = fields.Field(self.FakeFieldType)
+
+        class TestObject(base.VersionedObject):
+            fields = {'foo': self.nonNullableField,
+                      'bar': self.nullableField}
+
+        self.test_class = TestObject
+
+        self.nonNullableField.get_schema = \
+            mock.Mock(return_value={'type': ['fake']})
+        self.nullableField.get_schema = \
+            mock.Mock(return_value={'type': ['fake', 'null']})
+        self.test_class.obj_name = mock.Mock(return_value='TestObject')
+
+    def test_to_json_schema(self):
+        schema = self.test_class.to_json_schema()
+        self.nonNullableField.get_schema.assert_called_once_with()
+        self.nullableField.get_schema.assert_called_once_with()
+        self.assertEqual({
+            '$schema': 'http://json-schema.org/draft-04/schema#',
+            'title': 'TestObject',
+            'type': 'object',
+            'properties': {
+                'versioned_object.namespace': {
+                    'type': 'string'
+                },
+                'versioned_object.name': {
+                    'type': 'string'
+                },
+                'versioned_object.version': {
+                    'type': 'string'
+                },
+                'versioned_object.changes': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'string'
+                    }
+                },
+                'versioned_object.data': {
+                    'type': 'object',
+                    'description': 'fields of TestObject',
+                    'properties': {
+                        'foo': {'type': ['fake']},
+                        'bar': {'type': ['fake', 'null']}
+                    },
+                },
+                'required': ['bar', 'foo']
+            },
+            'required': ['versioned_object.namespace', 'versioned_object.name',
+                         'versioned_object.version', 'versioned_object.data']
+        }, schema)
 
 
 class TestNamespaceCompatibility(test.TestCase):

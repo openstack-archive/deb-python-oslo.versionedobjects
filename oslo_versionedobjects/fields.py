@@ -127,6 +127,9 @@ class FieldType(AbstractFieldType):
     def stringify(self, value):
         return str(value)
 
+    def get_schema(self):
+        raise NotImplementedError()
+
 
 class UnspecifiedDefault(object):
     pass
@@ -237,6 +240,16 @@ class Field(object):
         else:
             return self._type.stringify(value)
 
+    def get_schema(self):
+        schema = self._type.get_schema()
+        schema.update({'readonly': self.read_only})
+        if self.nullable:
+            schema['type'].append('null')
+        default = self.default
+        if default != UnspecifiedDefault:
+            schema.update({'default': default})
+        return schema
+
 
 class String(FieldType):
     @staticmethod
@@ -254,6 +267,9 @@ class String(FieldType):
     @staticmethod
     def stringify(value):
         return '\'%s\'' % value
+
+    def get_schema(self):
+        return {'type': ['string']}
 
 
 class SensitiveString(String):
@@ -307,6 +323,9 @@ class Enum(String):
             raise ValueError(msg)
         return super(Enum, self).stringify(value)
 
+    def get_schema(self):
+        return {'enum': self._valid_values}
+
 
 class UUID(FieldType):
     @staticmethod
@@ -344,21 +363,43 @@ class MACAddress(FieldType):
         raise ValueError(_LE("Malformed MAC %s"), value)
 
 
+class PCIAddress(FieldType):
+
+    _REGEX = re.compile(r'^[0-9a-f]{4}:[0-9a-f]{2}:[0-1][0-9a-f].[0-7]$')
+
+    @staticmethod
+    def coerce(obj, attr, value):
+        if isinstance(value, six.string_types):
+            newvalue = value.lower()
+            if PCIAddress._REGEX.match(newvalue):
+                return newvalue
+        raise ValueError(_LE("Malformed PCI address %s"), value)
+
+
 class Integer(FieldType):
     @staticmethod
     def coerce(obj, attr, value):
         return int(value)
+
+    def get_schema(self):
+        return {'type': ['integer']}
 
 
 class Float(FieldType):
     def coerce(self, obj, attr, value):
         return float(value)
 
+    def get_schema(self):
+        return {'type': ['number']}
+
 
 class Boolean(FieldType):
     @staticmethod
     def coerce(obj, attr, value):
         return bool(value)
+
+    def get_schema(self):
+        return {'type': ['boolean']}
 
 
 class FlexibleBoolean(Boolean):
@@ -494,6 +535,9 @@ class List(CompoundFieldType):
         return '[%s]' % (
             ','.join([self._element_type.stringify(x) for x in value]))
 
+    def get_schema(self):
+        return {'type': ['array'], 'items': self._element_type.get_schema()}
+
 
 class Dict(CompoundFieldType):
     def coerce(self, obj, attr, value):
@@ -614,10 +658,17 @@ class Object(FieldType):
                 # If we're not dealing with an object, it's probably a
                 # primitive so get it's type for the message below.
                 obj_name = type(value).__name__
+            obj_mod = ''
+            if hasattr(obj, '__module__'):
+                obj_mod = ''.join([obj.__module__, '.'])
+            val_mod = ''
+            if hasattr(value, '__module__'):
+                val_mod = ''.join([value.__module__, '.'])
             raise ValueError(_('An object of type %(type)s is required '
                                'in field %(attr)s, not a %(valtype)s') %
-                             {'type': self._obj_name, 'attr': attr,
-                              'valtype': obj_name})
+                             {'type': ''.join([obj_mod, self._obj_name]),
+                              'attr': attr, 'valtype': ''.join([val_mod,
+                                                                obj_name])})
         return value
 
     @staticmethod
@@ -685,7 +736,7 @@ class BaseEnumField(AutoTypedField):
 
         if not isinstance(self.AUTO_TYPE, Enum):
             raise exception.EnumFieldInvalid(
-                typename=self.AUTO_TYPE.__class__.__name,
+                typename=self.AUTO_TYPE.__class__.__name__,
                 fieldname=self.__class__.__name__)
 
         super(BaseEnumField, self).__init__(**kwargs)
@@ -837,6 +888,10 @@ class UUIDField(AutoTypedField):
 
 class MACAddressField(AutoTypedField):
     AUTO_TYPE = MACAddress()
+
+
+class PCIAddressField(AutoTypedField):
+    AUTO_TYPE = PCIAddress()
 
 
 class IntegerField(AutoTypedField):

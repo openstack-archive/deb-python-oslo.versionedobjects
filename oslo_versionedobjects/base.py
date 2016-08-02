@@ -143,12 +143,15 @@ class VersionedObjectRegistry(object):
     def register_if(cls, condition):
         def wraps(obj_cls):
             if condition:
-                registry = cls()
-                registry._register_class(obj_cls)
+                obj_cls = cls.register(obj_cls)
             else:
                 _make_class_properties(obj_cls)
             return obj_cls
         return wraps
+
+    @classmethod
+    def objectify(cls, obj_cls):
+        return cls.register_if(False)(obj_cls)
 
     @classmethod
     def obj_classes(cls):
@@ -320,6 +323,50 @@ class VersionedObject(object):
             return self.obj_attr_is_set(name)
         except AttributeError:
             return False
+
+    @classmethod
+    def to_json_schema(cls):
+        obj_name = cls.obj_name()
+        field_schemas = {key: field.get_schema()
+                         for key, field in cls.fields.items()}
+        required_fields = [name for name, schema in
+                           sorted(field_schemas.items())]
+        namespace_key = cls._obj_primitive_key('namespace')
+        name_key = cls._obj_primitive_key('name')
+        version_key = cls._obj_primitive_key('version')
+        data_key = cls._obj_primitive_key('data')
+        changes_key = cls._obj_primitive_key('changes')
+
+        schema = {
+            '$schema': 'http://json-schema.org/draft-04/schema#',
+            'title': obj_name,
+            'type': 'object',
+            'properties': {
+                namespace_key: {
+                    'type': 'string'
+                },
+                name_key: {
+                    'type': 'string'
+                },
+                version_key: {
+                    'type': 'string'
+                },
+                changes_key: {
+                    'type': 'array',
+                    'items': {
+                        'type': 'string'
+                    }
+                },
+                data_key: {
+                    'type': 'object',
+                    'description': 'fields of %s' % (obj_name),
+                    'properties': field_schemas
+                },
+                'required': required_fields
+            },
+            'required': [namespace_key, name_key, version_key, data_key]
+        }
+        return schema
 
     @classmethod
     def obj_name(cls):
@@ -678,7 +725,14 @@ class ComparableVersionedObject(object):
     def __eq__(self, obj):
         # FIXME(inc0): this can return incorrect value if we consider partially
         # loaded objects from db and fields which are dropped out differ
-        return self.obj_to_primitive() == obj.obj_to_primitive()
+        if hasattr(obj, 'obj_to_primitive'):
+            return self.obj_to_primitive() == obj.obj_to_primitive()
+        return NotImplemented
+
+    def __ne__(self, obj):
+        if hasattr(obj, 'obj_to_primitive'):
+            return self.obj_to_primitive() != obj.obj_to_primitive()
+        return NotImplemented
 
 
 class VersionedObjectDictCompat(object):

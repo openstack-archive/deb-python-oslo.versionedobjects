@@ -37,6 +37,9 @@ class FakeFieldType(fields.FieldType):
     def from_primitive(self, obj, attr, value):
         return value[1:-1]
 
+    def get_schema(self):
+        return {'type': ['foo']}
+
 
 class FakeEnum(fields.Enum):
     FROG = "frog"
@@ -96,6 +99,11 @@ class FakeEnumAltField(fields.BaseEnumField):
     AUTO_TYPE = FakeEnumAlt()
 
 
+class TestFieldType(test.TestCase):
+    def test_get_schema(self):
+        self.assertRaises(NotImplementedError, fields.FieldType().get_schema)
+
+
 class TestField(test.TestCase):
     def setUp(self):
         super(TestField, self).setUp()
@@ -131,6 +139,18 @@ class TestField(test.TestCase):
         self.assertEqual('123', self.field.stringify(123))
 
 
+class TestSchema(test.TestCase):
+    def setUp(self):
+        super(TestSchema, self).setUp()
+        self.field = fields.Field(FakeFieldType(), nullable=True,
+                                  default='', read_only=False)
+
+    def test_get_schema(self):
+        self.assertEqual({'type': ['foo', 'null'], 'default': '',
+                          'readonly': False},
+                         self.field.get_schema())
+
+
 class TestString(TestField):
     def setUp(self):
         super(TestString, self).setUp()
@@ -145,6 +165,13 @@ class TestString(TestField):
 
     def test_stringify(self):
         self.assertEqual("'123'", self.field.stringify(123))
+
+    def test_fieldtype_get_schema(self):
+        self.assertEqual({'type': ['string']}, self.field._type.get_schema())
+
+    def test_get_schema(self):
+        self.assertEqual({'type': ['string'], 'readonly': False},
+                         self.field.get_schema())
 
 
 class TestSensitiveString(TestString):
@@ -184,6 +211,27 @@ class TestMACAddress(TestField):
             'C6:DF:11:A5:C8',  # Too short
             'C6:DF:11:A5:C8:5D:D7',  # Too long
             'C6:DF:11:A5:C8:KD',  # Bad octal
+            1123123,  # Number
+            {},  # dict
+        ]
+        self.to_primitive_values = self.coerce_good_values[0:1]
+        self.from_primitive_values = self.coerce_good_values[0:1]
+
+
+class TestPCIAddress(TestField):
+    def setUp(self):
+        super(TestPCIAddress, self).setUp()
+        self.field = fields.PCIAddressField()
+        self.coerce_good_values = [
+            ('0000:02:00.0', '0000:02:00.0'),
+            ('FFFF:FF:1F.7', 'ffff:ff:1f.7'),
+            ('fFfF:fF:1F.7', 'ffff:ff:1f.7'),
+        ]
+        self.coerce_bad_values = [
+            '000:02:00.0',  # Too short
+            '00000:02:00.0',  # Too long
+            'FFFF:FF:2F.7',  # Bad slot
+            'FFFF:GF:1F.7',  # Bad octal
             1123123,  # Number
             {},  # dict
         ]
@@ -277,6 +325,14 @@ class TestEnum(TestField):
     def test_stringify_invalid(self):
         self.assertRaises(ValueError, self.field.stringify, '123')
 
+    def test_fieldtype_get_schema(self):
+        self.assertEqual({'enum': ["foo", "bar", 1, True]},
+                         self.field._type.get_schema())
+
+    def test_get_schema(self):
+        self.assertEqual({'enum': ["foo", "bar", 1, True],
+                          'readonly': False}, self.field.get_schema())
+
     def test_fingerprint(self):
         # Notes(yjiang5): make sure changing valid_value will be detected
         # in test_objects.test_versions
@@ -295,6 +351,15 @@ class TestEnum(TestField):
     def test_non_iterable_valid_values(self):
         self.assertRaises(exception.EnumValidValuesInvalidError,
                           fields.EnumField, True)
+
+    def test_enum_subclass_check(self):
+        def _test():
+            class BrokenEnumField(fields.BaseEnumField):
+                AUTO_TYPE = int
+
+            BrokenEnumField()
+
+        self.assertRaises(exception.EnumFieldInvalid, _test)
 
 
 class TestStateMachine(TestField):
@@ -371,6 +436,13 @@ class TestInteger(TestField):
         self.to_primitive_values = self.coerce_good_values[0:1]
         self.from_primitive_values = self.coerce_good_values[0:1]
 
+    def test_fieldtype_get_schema(self):
+        self.assertEqual({'type': ['integer']}, self.field._type.get_schema())
+
+    def test_get_schema(self):
+        self.assertEqual({'type': ['integer'], 'readonly': False},
+                         self.field.get_schema())
+
 
 class TestFloat(TestField):
     def setUp(self):
@@ -380,6 +452,13 @@ class TestFloat(TestField):
         self.coerce_bad_values = ['foo', None]
         self.to_primitive_values = self.coerce_good_values[0:1]
         self.from_primitive_values = self.coerce_good_values[0:1]
+
+    def test_fieldtype_get_schema(self):
+        self.assertEqual({'type': ['number']}, self.field._type.get_schema())
+
+    def test_get_schema(self):
+        self.assertEqual({'type': ['number'], 'readonly': False},
+                         self.field.get_schema())
 
 
 class TestBoolean(TestField):
@@ -391,6 +470,13 @@ class TestBoolean(TestField):
         self.coerce_bad_values = []
         self.to_primitive_values = self.coerce_good_values[0:2]
         self.from_primitive_values = self.coerce_good_values[0:2]
+
+    def test_fieldtype_get_schema(self):
+        self.assertEqual({'type': ['boolean']}, self.field._type.get_schema())
+
+    def test_get_schema(self):
+        self.assertEqual({'type': ['boolean'], 'readonly': False},
+                         self.field.get_schema())
 
 
 class TestFlexibleBoolean(TestField):
@@ -546,6 +632,17 @@ class TestList(TestField):
 
     def test_stringify(self):
         self.assertEqual('[123]', self.field.stringify([123]))
+
+    def test_fieldtype_get_schema(self):
+        self.assertEqual({'type': ['array'],
+                          'items': {'type': ['foo'], 'readonly': False}},
+                         self.field._type.get_schema())
+
+    def test_get_schema(self):
+        self.assertEqual({'type': ['array'],
+                          'items': {'type': ['foo'], 'readonly': False},
+                          'readonly': False},
+                         self.field.get_schema())
 
 
 class TestListOfStrings(TestField):

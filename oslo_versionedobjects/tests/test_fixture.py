@@ -80,12 +80,72 @@ class TestObjectComparators(test.TestCase):
             self.assertIn(call, actual_calls)
 
     def test_compare_obj_with_unset(self):
+        # If the object has nothing set, and also the db object has the same
+        # thing not set, it's OK.
         mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
         my_obj = self.MyComparedObject()
         my_db_obj = {}
 
-        self.assertRaises(AssertionError, fixture.compare_obj,
-                          mock_test, my_obj, my_db_obj)
+        fixture.compare_obj(mock_test, my_obj, my_db_obj)
+
+        self.assertFalse(mock_test.assertEqual.called, "assertEqual should "
+                         "not have been called, there is nothing to compare.")
+
+    def test_compare_obj_with_unset_in_obj(self):
+        # If the db dict has something set, but the object doesn't, that's !=
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        my_obj = self.MyComparedObject(foo=1)
+        my_db_obj = {'foo': 1, 'bar': 2}
+
+        self.assertRaises(AssertionError, fixture.compare_obj, mock_test,
+                          my_obj, my_db_obj)
+
+    def test_compare_obj_with_unset_in_db_dict(self):
+        # If the object has something set, but the db dict doesn't, that's !=
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        my_obj = self.MyComparedObject(foo=1, bar=2)
+        my_db_obj = {'foo': 1}
+
+        self.assertRaises(AssertionError, fixture.compare_obj, mock_test,
+                          my_obj, my_db_obj)
+
+    def test_compare_obj_with_unset_in_obj_ignored(self):
+        # If the db dict has something set, but the object doesn't, but we
+        # ignore that key, we are equal
+        my_obj = self.MyComparedObject(foo=1)
+        my_db_obj = {'foo': 1, 'bar': 2}
+        ignore = ['bar']
+
+        fixture.compare_obj(self, my_obj, my_db_obj, allow_missing=ignore)
+
+    def test_compare_obj_with_unset_in_db_dict_ignored(self):
+        # If the object has something set, but the db dict doesn't, but we
+        # ignore that key, we are equal
+        my_obj = self.MyComparedObject(foo=1, bar=2)
+        my_db_obj = {'foo': 1}
+        ignore = ['bar']
+
+        fixture.compare_obj(self, my_obj, my_db_obj, allow_missing=ignore)
+
+    def test_compare_obj_with_allow_missing_unequal(self):
+        # If the tested key is in allow_missing, but both the obj and db_obj
+        # have the value set, we should still check it for equality
+        mock_test = mock.Mock()
+        mock_test.assertEqual = mock.Mock()
+        my_obj = self.MyComparedObject(foo=1, bar=2)
+        my_db_obj = {'foo': 1, 'bar': 1}
+        ignore = ['bar']
+
+        fixture.compare_obj(mock_test, my_obj, my_db_obj,
+                            allow_missing=ignore)
+
+        expected_calls = [(1, 1), (1, 2)]
+        actual_calls = [c[0] for c in mock_test.assertEqual.call_args_list]
+        for call in expected_calls:
+            self.assertIn(call, actual_calls)
 
     def test_compare_obj_with_subs(self):
         mock_test = mock.Mock()
@@ -261,6 +321,16 @@ class TestObjectVersionChecker(test.TestCase):
         self.assertEqual(expected_actual, actual_act, "Actual hashes "
                          "should contain the updated object with the new "
                          "hash.")
+
+    def test_test_hashes_passes_extra_func(self):
+        # Make sure that test_hashes passes the extra_func to get_hashes
+        mock_extra_func = mock.Mock()
+
+        with mock.patch.object(self.ovc, 'get_hashes') as mock_get_hashes:
+            self.ovc.test_hashes({}, extra_data_func=mock_extra_func)
+
+            mock_get_hashes.assert_called_once_with(
+                extra_data_func=mock_extra_func)
 
     def test_get_dependency_tree(self):
         # Make sure get_dependency_tree() gets the dependencies of all
