@@ -1,0 +1,8 @@
+Code-Review+2: Davanum Srinivas (dims) <davanum@gmail.com>
+Workflow+1: Davanum Srinivas (dims) <davanum@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Tue, 24 Nov 2015 21:35:05 +0000
+Reviewed-on: https://review.openstack.org/249374
+Project: openstack/deb-python-oslo.versionedobjects
+Branch: refs/heads/stable/liberty
