@@ -1,4 +1,17 @@
-python-oslo.versionedobjects (1.13.0-1) UNRELEASED; urgency=medium
+python-oslo.versionedobjects (1.17.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Corey Bryant <corey.bryant@canonical.com>  Wed, 31 Aug 2016 14:08:23 -0400
+
+python-oslo.versionedobjects (1.16.0-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Align (Build-)Depends with upstream.
+
+ -- James Page <james.page@ubuntu.com>  Thu, 25 Aug 2016 09:09:53 +0100
+
+python-oslo.versionedobjects (1.15.0-1) experimental; urgency=medium
 
   [ David Della Vecchia ]
   * New upstream release.
@@ -6,8 +19,10 @@ python-oslo.versionedobjects (1.13.0-1) UNRELEASED; urgency=medium
 
   [ Corey Bryant ]
   * d/control: Bump python-oslo.utils BD to >= 3.15.0.
+  * New upstream release.
+  * d/control: Align (build-)depends with upstream.
 
- -- Corey Bryant <corey.bryant@canonical.com>  Tue, 02 Aug 2016 14:19:40 -0400
+ -- Corey Bryant <corey.bryant@canonical.com>  Tue, 23 Aug 2016 11:18:37 +0100
 
 python-oslo.versionedobjects (1.9.1-1) experimental; urgency=medium
 
