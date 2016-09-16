@@ -1,0 +1,8 @@
+Code-Review+2: Jay Pipes <jaypipes@gmail.com>
+Workflow+1: Jay Pipes <jaypipes@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 16 Sep 2016 14:10:06 +0000
+Reviewed-on: https://review.openstack.org/368986
+Project: openstack/deb-python-oslo.versionedobjects
+Branch: refs/heads/master
