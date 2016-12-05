@@ -1,0 +1,10 @@
+Code-Review+1: amrith <amrith@tesora.com>
+Code-Review+2: Joshua Harlow <jxharlow@godaddy.com>
+Code-Review+2: Jay Pipes <jaypipes@gmail.com>
+Workflow+1: Jay Pipes <jaypipes@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Fri, 02 Dec 2016 14:40:40 +0000
+Reviewed-on: https://review.openstack.org/403567
+Project: openstack/deb-python-oslo.versionedobjects
+Branch: refs/heads/master
