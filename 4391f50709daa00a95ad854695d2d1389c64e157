@@ -1,0 +1,10 @@
+Code-Review+1: Joshua Harlow <jxharlow@godaddy.com>
+Code-Review+2: Jay Pipes <jaypipes@gmail.com>
+Code-Review+2: Davanum Srinivas (dims) <davanum@gmail.com>
+Workflow+1: Davanum Srinivas (dims) <davanum@gmail.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 05 Dec 2016 13:24:28 +0000
+Reviewed-on: https://review.openstack.org/389061
+Project: openstack/deb-python-oslo.versionedobjects
+Branch: refs/heads/master
