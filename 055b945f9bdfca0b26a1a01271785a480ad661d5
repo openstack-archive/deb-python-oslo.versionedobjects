@@ -1,0 +1,9 @@
+Code-Review+1: venkatamahesh <Venkata.Kotha@infinite.com>
+Code-Review+2: Joshua Harlow <jxharlow@godaddy.com>
+Workflow+1: Joshua Harlow <jxharlow@godaddy.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Sat, 10 Dec 2016 00:29:33 +0000
+Reviewed-on: https://review.openstack.org/408111
+Project: openstack/deb-python-oslo.versionedobjects
+Branch: refs/heads/master
