@@ -1,0 +1,10 @@
+Code-Review+1: Rahul U Nair <rahulunair@gmail.com>
+Code-Review+2: ChangBo Guo(gcb) <glongwave@gmail.com>
+Code-Review+2: Doug Hellmann <doug@doughellmann.com>
+Workflow+1: Doug Hellmann <doug@doughellmann.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 02 Jan 2017 21:26:37 +0000
+Reviewed-on: https://review.openstack.org/409606
+Project: openstack/deb-python-oslo.versionedobjects
+Branch: refs/heads/master
